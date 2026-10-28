@@ -125,6 +125,7 @@ target_link_libraries(${MAIN_TARGET}
         pico_stdlib
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
+        usb_serial_debug
         TKJHAT_SDK
 )
 
@@ -135,7 +136,7 @@ if (PICO_CYW43_SUPPORTED)
 endif()
 
 #Support for stdio (printf, fwrite, puts...) via usb or UART. 
-pico_enable_stdio_usb(${MAIN_TARGET} 1)
+pico_enable_stdio_usb(${MAIN_TARGET} 0)
 pico_enable_stdio_uart(${MAIN_TARGET} 0)
 
 # Create different output files: 
