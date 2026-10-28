@@ -113,8 +113,21 @@ static void print_task(void *arg){
         //            timestamp, illuminance
         if(programState == DATA_READY) {
             char buf[BUFFER_SIZE];
-            sprintf(buf, "Lux: %i\n", ambientLight);
-            usb_serial_print(buf);
+            
+            if (usb_serial_connected()) {
+                sprintf(buf, "Lux: %i\n", ambientLight);
+                usb_serial_print(buf);
+                usb_serial_flush();
+            }
+            
+            if(tud_cdc_n_connected(CDC_ITF_TX)){
+                TickType_t ticks = xTaskGetTickCount();
+                uint32_t ms = ticks * portTICK_PERIOD_MS;
+                sprintf(buf, "%i,%i\n", ms, ambientLight);
+                tud_cdc_n_write(CDC_ITF_TX,buf,strlen(buf));
+                tud_cdc_n_write_flush(CDC_ITF_TX);
+            }
+            
             programState = WAITING;
         }
 
