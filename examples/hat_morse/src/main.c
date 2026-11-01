@@ -116,13 +116,18 @@ void imu_task(void *pvParameters) {
     while (1)
     {
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
+            char p;
             if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
                 sprintf(buf, "Flat\n");
+                p = '-';
             } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
                 sprintf(buf, "Stand\n");
+                p = '.';
             } else {
                 sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+                p = ' ';
             }
+            xQueueSend(morseTxQueue, &p, portMAX_DELAY);
             
             usb_serial_print(buf);
             usb_serial_flush();
