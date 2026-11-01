@@ -97,19 +97,20 @@ int main (void) {
     //Generating random seed
     srand((unsigned)time(NULL));
     // Initialize the JTKJ Hat and OLED display.
-init_hat_sdk();
-init_display();
-clear_display();
-write_text("Morse Ready!");
+    init_hat_sdk();
+    init_display();
+    clear_display();
+    write_text("Morse Ready!");
 
     // Queue for outgoing Morse characters.
-morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
+    morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
 
-if (morseTxQueue == NULL) {
-    while (1) {
-        // Stop if the queue could not be created.
+    if (morseTxQueue == NULL) {
+        while (1) {
+            // Stop if the queue could not be created.
+        }
     }
-}
+    
     // Create tasks
     TaskHandle_t hUsb   = NULL;
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
