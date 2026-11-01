@@ -93,6 +93,46 @@ static void usbTask(void *arg) {
     }
 }
 
+static inline int inBetween(const float *value, float low, float high) {
+    if (*value > low && *value < high) return 1;
+    else return 0;
+}
+
+void imu_task(void *pvParameters) {
+    (void)pvParameters;
+
+    float ax, ay, az, gx, gy, gz, t;
+    // Setting up the sensor. 
+    if (init_ICM42670() == 0) {
+        usb_serial_print("ICM-42670P initialized successfully!\n");
+        if (ICM42670_start_with_default_values() != 0){
+            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+        }
+    } else {
+        usb_serial_print("Failed to initialize ICM-42670P.\n");
+    }
+    // Start collection data here. Infinite loop. 
+    uint8_t buf[BUFFER_SIZE];
+    while (1)
+    {
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
+            if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
+                sprintf(buf, "Flat\n");
+            } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
+                sprintf(buf, "Stand\n");
+            } else {
+                sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+            }
+            
+            usb_serial_print(buf);
+            usb_serial_flush();
+        } else {
+            usb_serial_print("Failed to read imu data\n");
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
 int main (void) {
     //Generating random seed
     srand((unsigned)time(NULL));
@@ -116,6 +156,7 @@ int main (void) {
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
     xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
+    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL);
 
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUsb, 1u << 0);
@@ -130,7 +171,6 @@ int main (void) {
     usb_serial_init();
     vTaskStartScheduler();
     return 0;
-
 }
 
 // Called by the USB task when a CDC interface receives data.
