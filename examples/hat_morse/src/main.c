@@ -132,22 +132,21 @@ static void imu_task(void *pvParameters) {
         char c = 0; // Local variable for each loop, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
             if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
-                sprintf(buf, "Flat\n");
                 c = '-';
             } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
-                sprintf(buf, "Stand\n");
                 c = '.';
             }
 
             // Send results
-            if (c == 0)
+            if (c == 0) {
                 sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+                usb_serial_print(buf);
+                usb_serial_flush();
+            }
             else {
                 if(prev_c != c) // New user action
                     xQueueSend(morseTxQueue, &c, portMAX_DELAY);
             }
-            usb_serial_print(buf);
-            usb_serial_flush();
         } else {
             usb_serial_print("Failed to read imu data\n");
         }
