@@ -161,6 +161,9 @@ static void imu_task(void *pvParameters) {
     }
 }
 
+/// @brief Button caller to control the space input to the workstation
+/// @param gpio Unused
+/// @param eventMask Unused
 static void btn_fxn(uint gpio, uint32_t eventMask) {
     char c = ' ';
     xQueueSend(morseTxQueue, &c, portMAX_DELAY);
