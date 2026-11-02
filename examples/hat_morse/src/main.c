@@ -22,7 +22,7 @@
 #define CDC_ITF_TX      1
 #define MORSE_QUEUE_LENGTH 128
 #define USER_INPUT_DELAY 200
-#define SENSOR_DELAY    20
+#define SENSOR_DELAY    40
 static QueueHandle_t morseTxQueue = NULL;  
 
 
@@ -67,7 +67,18 @@ static void sendTask(void *arg)
             tud_cdc_n_write_flush(CDC_ITF_TX);
 
             // Use buzzer to indicate a succesful morse signal
-            buzzer_play_tone(110, 50);
+            switch (ch)
+            {
+            case '.':
+                buzzer_play_tone(110, 50);
+                break;
+            case '-':
+                buzzer_play_tone(330, 50);
+                break;
+            case ' ':
+                buzzer_play_tone(220, 150);
+                break;
+            }
         }
     }
 }
@@ -131,9 +142,15 @@ static void imu_task(void *pvParameters) {
     {
         char c = 0; // Local variable for each loop, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
+            if (inBetween(&ax, -0.4, 0.4) 
+                && inBetween(&ay, -0.4, 0.4) 
+                && !inBetween(&az, -0.6, 0.6)
+                && inBetween(&gx, -60, 60)) {
                 c = '-';
-            } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
+            } else if (inBetween(&ax, -0.4, 0.4) 
+                    && !inBetween(&ay, -0.6, 0.6) 
+                    && inBetween(&az, -0.4, 0.4)
+                    && inBetween(&gx, -60, 60)) {
                 c = '.';
             }
 
