@@ -21,6 +21,8 @@
 #define LUX_MAX         1500
 #define CDC_ITF_TX      1
 #define MORSE_QUEUE_LENGTH 128
+#define USER_INPUT_DELAY 400
+#define SENSOR_DELAY    50
 static QueueHandle_t morseTxQueue = NULL;  
 
 
@@ -63,6 +65,9 @@ static void sendTask(void *arg)
             // Send one character to the workstation.
             tud_cdc_n_write(CDC_ITF_TX, &ch, 1);
             tud_cdc_n_write_flush(CDC_ITF_TX);
+
+            // Use buzzer to indicate a succesful morse signal
+            buzzer_play_tone(110, 50);
         }
     }
 }
@@ -123,15 +128,15 @@ static void imu_task(void *pvParameters) {
     uint8_t buf[BUFFER_SIZE];
     while (1)
     {
+        char c = 0; // Local variable, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            char c = 0; // Local variable, sent to queue via address
             if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
                 sprintf(buf, "Flat\n");
                 c = '-';
             } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
                 sprintf(buf, "Stand\n");
                 c = '.';
-            } 
+            }
 
             // Send results
             if (c == 0)
@@ -143,7 +148,12 @@ static void imu_task(void *pvParameters) {
         } else {
             usb_serial_print("Failed to read imu data\n");
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+
+        // Adjust software for faster reactivity and user lag
+        if(c == 0)
+            vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
+        else
+            vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
     }
 }
 
@@ -151,7 +161,6 @@ static void btn_fxn(uint gpio, uint32_t eventMask) {
     char c = ' ';
     xQueueSend(morseTxQueue, &c, portMAX_DELAY);
 }
-
 
 int main (void) {
     //Generating random seed
@@ -166,6 +175,9 @@ int main (void) {
     init_sw1();
     gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btn_fxn);
 
+    // Initialize Buzzer
+    init_buzzer();
+
     // Queue for outgoing Morse characters.
     morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
 
@@ -179,7 +191,7 @@ int main (void) {
     TaskHandle_t hUsb   = NULL;
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
-    xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
+    // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
     xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
     #if (configNUMBER_OF_CORES > 1)
