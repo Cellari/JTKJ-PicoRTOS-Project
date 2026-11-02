@@ -21,8 +21,8 @@
 #define LUX_MAX         1500
 #define CDC_ITF_TX      1
 #define MORSE_QUEUE_LENGTH 128
-#define USER_INPUT_DELAY 400
-#define SENSOR_DELAY    50
+#define USER_INPUT_DELAY 200
+#define SENSOR_DELAY    20
 static QueueHandle_t morseTxQueue = NULL;  
 
 
@@ -126,9 +126,10 @@ static void imu_task(void *pvParameters) {
     
     // Start device orientation decodings for sending morse code. Infinite loop. 
     uint8_t buf[BUFFER_SIZE];
+    char prev_c;
     while (1)
     {
-        char c = 0; // Local variable, sent to queue via address
+        char c = 0; // Local variable for each loop, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
             if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
                 sprintf(buf, "Flat\n");
@@ -141,15 +142,19 @@ static void imu_task(void *pvParameters) {
             // Send results
             if (c == 0)
                 sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
-            else
-                xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+            else {
+                if(prev_c != c) // New user action
+                    xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+            }
             usb_serial_print(buf);
             usb_serial_flush();
         } else {
             usb_serial_print("Failed to read imu data\n");
         }
 
-        // Adjust software for faster reactivity and user lag
+        prev_c = c;
+
+        // Adjust software responsiveness
         if(c == 0)
             vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
         else
