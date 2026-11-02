@@ -93,12 +93,19 @@ static void usbTask(void *arg) {
     }
 }
 
+/// @brief A shorthand function to implement a repeated value range comparison
+/// @param value Pointer to the value to be evaluated
+/// @param low The low non-reachable boundary for the value
+/// @param high The high non-reachable boundary for the value
+/// @return true (1) if the value is between the boundary values, otherwise false (0)
 static inline int inBetween(const float *value, float low, float high) {
     if (*value > low && *value < high) return 1;
     else return 0;
 }
 
-void imu_task(void *pvParameters) {
+/// @brief Listens to the IMU-sensor values to add morse code to the queue
+/// @param pvParameters Unused
+static void imu_task(void *pvParameters) {
     (void)pvParameters;
 
     float ax, ay, az, gx, gy, gz, t;
@@ -111,24 +118,26 @@ void imu_task(void *pvParameters) {
     } else {
         usb_serial_print("Failed to initialize ICM-42670P.\n");
     }
-    // Start collection data here. Infinite loop. 
+    
+    // Start device orientation decodings for sending morse code. Infinite loop. 
     uint8_t buf[BUFFER_SIZE];
     while (1)
     {
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            char p;
+            char c; // Local variable, sent to queue via address
             if (inBetween(&ax, -0.3, 0.3) && inBetween(&ay, -0.3, 0.3) && !inBetween(&az, -0.7, 0.7)) {
                 sprintf(buf, "Flat\n");
-                p = '-';
+                c = '-';
             } else if (inBetween(&ax, -0.3, 0.3) && !inBetween(&ay, -0.7, 0.7) && inBetween(&az, -0.3, 0.3)) {
                 sprintf(buf, "Stand\n");
-                p = '.';
+                c = '.';
             } else {
                 sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
-                p = ' ';
+                c = ' ';
             }
-            xQueueSend(morseTxQueue, &p, portMAX_DELAY);
-            
+
+            // Send results
+            xQueueSend(morseTxQueue, &c, portMAX_DELAY);
             usb_serial_print(buf);
             usb_serial_flush();
         } else {
@@ -161,7 +170,7 @@ int main (void) {
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
     xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
-    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL);
+    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUsb, 1u << 0);
