@@ -21,6 +21,8 @@
 #define LUX_MAX         1500
 #define CDC_ITF_TX      1
 #define MORSE_QUEUE_LENGTH 128
+#define USER_INPUT_DELAY 200
+#define SENSOR_DELAY    40
 static QueueHandle_t morseTxQueue = NULL;  
 
 
@@ -63,6 +65,20 @@ static void sendTask(void *arg)
             // Send one character to the workstation.
             tud_cdc_n_write(CDC_ITF_TX, &ch, 1);
             tud_cdc_n_write_flush(CDC_ITF_TX);
+
+            // Use buzzer to indicate a succesful morse signal
+            switch (ch)
+            {
+            case '.':
+                buzzer_play_tone(110, 50);
+                break;
+            case '-':
+                buzzer_play_tone(330, 50);
+                break;
+            case ' ':
+                buzzer_play_tone(220, 150);
+                break;
+            }
         }
     }
 }
@@ -93,6 +109,81 @@ static void usbTask(void *arg) {
     }
 }
 
+/// @brief A shorthand function to implement a repeated value range comparison
+/// @param value Pointer to the value to be evaluated
+/// @param low The low non-reachable boundary for the value
+/// @param high The high non-reachable boundary for the value
+/// @return true (1) if the value is between the boundary values, otherwise false (0)
+static inline int inBetween(const float *value, float low, float high) {
+    if (*value > low && *value < high) return 1;
+    else return 0;
+}
+
+/// @brief Listens to the IMU-sensor values to add morse code to the queue
+/// @param pvParameters Unused
+static void imu_task(void *pvParameters) {
+    (void)pvParameters;
+
+    float ax, ay, az, gx, gy, gz, t;
+    // Setting up the sensor. 
+    if (init_ICM42670() == 0) {
+        usb_serial_print("ICM-42670P initialized successfully!\n");
+        if (ICM42670_start_with_default_values() != 0){
+            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+        }
+    } else {
+        usb_serial_print("Failed to initialize ICM-42670P.\n");
+    }
+    
+    // Start device orientation decodings for sending morse code. Infinite loop. 
+    uint8_t buf[BUFFER_SIZE];
+    char prev_c;
+    while (1)
+    {
+        char c = 0; // Local variable for each loop, sent to queue via address
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
+            if (inBetween(&ax, -0.4, 0.4) 
+                && inBetween(&ay, -0.4, 0.4) 
+                && !inBetween(&az, -0.6, 0.6)
+                && inBetween(&gx, -60, 60)) {
+                c = '-';
+            } else if (inBetween(&ax, -0.4, 0.4) 
+                    && !inBetween(&ay, -0.6, 0.6) 
+                    && inBetween(&az, -0.4, 0.4)
+                    && inBetween(&gx, -60, 60)) {
+                c = '.';
+            }
+
+            // Send results
+            if (c == 0) {
+                sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+                usb_serial_print(buf);
+                usb_serial_flush();
+            } else if (prev_c != c) { // New user action
+                xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+            }
+        } else {
+            usb_serial_print("Failed to read imu data\n");
+        }
+
+        prev_c = c;
+
+        // Adjust software responsiveness
+        if(c == 0)
+            vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
+        else
+            vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
+    }
+}
+
+/// @brief Button caller to control the space input to the workstation
+/// @param gpio Unused
+/// @param eventMask Unused
+static void btn_fxn(uint gpio, uint32_t eventMask) {
+    char c = ' ';
+    xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+}
+
 int main (void) {
     //Generating random seed
     srand((unsigned)time(NULL));
@@ -101,6 +192,13 @@ int main (void) {
     init_display();
     clear_display();
     write_text("Morse Ready!");
+
+    // Set the control button
+    init_sw1();
+    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btn_fxn);
+
+    // Initialize Buzzer
+    init_buzzer();
 
     // Queue for outgoing Morse characters.
     morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
@@ -115,7 +213,8 @@ int main (void) {
     TaskHandle_t hUsb   = NULL;
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
-    xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
+    // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
+    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUsb, 1u << 0);
@@ -130,7 +229,6 @@ int main (void) {
     usb_serial_init();
     vTaskStartScheduler();
     return 0;
-
 }
 
 // Called by the USB task when a CDC interface receives data.
