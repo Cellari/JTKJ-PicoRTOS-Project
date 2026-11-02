@@ -142,10 +142,8 @@ static void imu_task(void *pvParameters) {
                 sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
                 usb_serial_print(buf);
                 usb_serial_flush();
-            }
-            else {
-                if(prev_c != c) // New user action
-                    xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+            } else if (prev_c != c) { // New user action
+                xQueueSend(morseTxQueue, &c, portMAX_DELAY);
             }
         } else {
             usb_serial_print("Failed to read imu data\n");
