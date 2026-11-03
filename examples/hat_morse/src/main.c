@@ -119,9 +119,9 @@ static inline int inBetween(const float *value, float low, float high) {
     else return 0;
 }
 
-/// @brief Listens to the IMU-sensor values to add morse code to the queue
+/// @brief Listens to the IMU-sensor values to add morse code to the queue via device orientation
 /// @param pvParameters Unused
-static void imu_task(void *pvParameters) {
+static void listen_orientation_task(void *pvParameters) {
     (void)pvParameters;
 
     float ax, ay, az, gx, gy, gz, t;
@@ -214,7 +214,7 @@ int main (void) {
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
     // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
-    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
+    xTaskCreate(listen_orientation_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUsb, 1u << 0);
