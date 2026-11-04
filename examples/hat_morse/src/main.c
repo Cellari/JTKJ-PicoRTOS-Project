@@ -24,7 +24,7 @@
 #define USER_INPUT_DELAY 200
 #define SENSOR_DELAY    40
 static QueueHandle_t morseTxQueue = NULL;  
-
+static QueueHandle_t morseRxQueue = NULL; 
 
 /*#if   CFG_TUSB_OS == OPT_OS_FREERTOS
 #pragma message "TinyUSB: FreeRTOS"
@@ -58,8 +58,9 @@ static void sendTask(void *arg)
         if (xQueueReceive(morseTxQueue, &ch, portMAX_DELAY) == pdTRUE) {
 
             // Wait until CDC1 is connected.
-            while (!tud_cdc_n_connected(CDC_ITF_TX)) {
+            if (!tud_cdc_n_connected(CDC_ITF_TX)) {
                 vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
             }
 
             // Send one character to the workstation.
@@ -99,7 +100,38 @@ static void testMorseTask(void *arg)
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
+// Receives Morse symbols from the workstation and displays each complete message on the OLED.
+static void receiveTask(void *arg)
+{
+    (void)arg;
 
+    char ch;
+    char message[BUFFER_SIZE];
+    uint32_t index = 0;
+
+    while (1) {
+        if (xQueueReceive(morseRxQueue, &ch, portMAX_DELAY) == pdTRUE) {
+
+            if (ch == '\r') {
+                continue;
+            }
+
+            if (ch == '\n') {
+                message[index] = '\0';
+
+                if (index > 0) {
+                    clear_display();
+                    write_text(message);
+                }
+
+                index = 0;
+            }
+            else if (index < BUFFER_SIZE - 1) {
+                message[index++] = ch;
+            }
+        }
+    }
+}
 // ---- Task running USB stack ----
 static void usbTask(void *arg) {
     (void)arg;
@@ -191,7 +223,7 @@ int main (void) {
     init_hat_sdk();
     init_display();
     clear_display();
-    write_text("Morse Ready!");
+    write_text("Working");
 
     // Set the control button
     init_sw1();
@@ -202,17 +234,26 @@ int main (void) {
 
     // Queue for outgoing Morse characters.
     morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
+    
 
     if (morseTxQueue == NULL) {
         while (1) {
             // Stop if the queue could not be created.
         }
     }
-    
+    // Queue for incoming Morse characters.
+morseRxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
+
+if (morseRxQueue == NULL) {
+    while (1) {
+        // Stop if the queue could not be created.
+    }
+}
     // Create tasks
     TaskHandle_t hUsb   = NULL;
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
+    xTaskCreate(receiveTask, "receive", 1024, NULL, 2, NULL);
     // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
     xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
@@ -236,6 +277,12 @@ void tud_cdc_rx_cb(uint8_t itf) {
     // Reserve two extra bytes for the newline and string terminator.
     char buf[CFG_TUD_CDC_RX_BUFSIZE + 2];
     uint32_t count = tud_cdc_n_read(itf, buf, sizeof(buf) - 2);
+    // Put incoming Morse characters into the receiving queue.
+    if (itf == 1 && count > 0) {
+        for (uint32_t i = 0; i < count; i++) {
+            xQueueSend(morseRxQueue, &buf[i], 0);
+        }
+    }
     buf[count] = '\n';
     buf[count + 1] = '\0';
 
