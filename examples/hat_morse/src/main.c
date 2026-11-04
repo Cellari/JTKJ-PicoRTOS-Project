@@ -124,7 +124,7 @@ static void listenMovementTask(void *pvParameters) {
 
     float ax, ay, az, gx, gy, gz, t;
     
-    // Start device orientation decodings for sending morse code. Infinite loop. 
+    // Start device movement decodings for sending morse code. Infinite loop. 
     uint8_t buf[BUFFER_SIZE];
     char prev_c;
     while (1)
