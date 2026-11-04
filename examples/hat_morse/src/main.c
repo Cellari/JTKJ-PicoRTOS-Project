@@ -119,21 +119,58 @@ static inline int inBetween(const float *value, float low, float high) {
     else return 0;
 }
 
-/// @brief Listens to the IMU-sensor values to add morse code to the queue via device orientation
-/// @param pvParameters Unused
-static void listen_orientation_task(void *pvParameters) {
+static void listenMovementTask(void *pvParameters) {
     (void)pvParameters;
 
     float ax, ay, az, gx, gy, gz, t;
-    // Setting up the sensor. 
-    if (init_ICM42670() == 0) {
-        usb_serial_print("ICM-42670P initialized successfully!\n");
-        if (ICM42670_start_with_default_values() != 0){
-            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+    
+    // Start device orientation decodings for sending morse code. Infinite loop. 
+    uint8_t buf[BUFFER_SIZE];
+    char prev_c;
+    while (1)
+    {
+        char c = 0; // Local variable for each loop, sent to queue via address
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
+            #define MOTION_EDGE 80 // Used for ease of modification
+            if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE)
+                && !inBetween(&gy, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)
+                && !inBetween(&gz, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)) {
+                c = '-';
+            } else if (!inBetween(&gx, -MOTION_EDGE*1.25, MOTION_EDGE*1.25)
+                    && (inBetween(&gy, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)
+                    || inBetween(&gz, -MOTION_EDGE*0.75, MOTION_EDGE*0.75))) {
+                c = '.';
+            }
+
+            // Send results
+            if (c != 0 && prev_c != c) { // New user action
+                xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+                
+                // Print the accepted action
+                sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+                usb_serial_print(buf);
+                usb_serial_flush();
+            }
+        } else {
+            usb_serial_print("Failed to read imu data\n");
         }
-    } else {
-        usb_serial_print("Failed to initialize ICM-42670P.\n");
+
+        prev_c = c;
+
+        // Adjust software responsiveness
+        if(c == 0)
+            vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
+        else
+            vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
     }
+}
+
+/// @brief Listens to the IMU-sensor values to add morse code to the queue via device orientation
+/// @param pvParameters Unused
+static void listenOrientationTask(void *pvParameters) {
+    (void)pvParameters;
+
+    float ax, ay, az, gx, gy, gz, t;
     
     // Start device orientation decodings for sending morse code. Infinite loop. 
     uint8_t buf[BUFFER_SIZE];
@@ -200,6 +237,16 @@ int main (void) {
     // Initialize Buzzer
     init_buzzer();
 
+    // Setting up the imu-sensor. 
+    if (init_ICM42670() == 0) {
+        usb_serial_print("ICM-42670P initialized successfully!\n");
+        if (ICM42670_start_with_default_values() != 0){
+            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+        }
+    } else {
+        usb_serial_print("Failed to initialize ICM-42670P.\n");
+    }
+
     // Queue for outgoing Morse characters.
     morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
 
@@ -214,7 +261,8 @@ int main (void) {
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
     // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
-    xTaskCreate(listen_orientation_task, "imu", 1024, NULL, 1, NULL); // listenTask
+    // xTaskCreate(listenOrientationTask, "imu", 1024, NULL, 1, NULL);
+    xTaskCreate(listenMovementTask, "imu", 1024, NULL, 1, NULL);
 
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUsb, 1u << 0);
