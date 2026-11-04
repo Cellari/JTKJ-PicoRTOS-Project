@@ -254,7 +254,7 @@ if (morseRxQueue == NULL) {
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
     xTaskCreate(receiveTask, "receive", 1024, NULL, 2, NULL);
-    // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
+    xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
     xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL); // listenTask
 
     #if (configNUMBER_OF_CORES > 1)
