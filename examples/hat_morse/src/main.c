@@ -26,6 +26,232 @@
 static QueueHandle_t morseTxQueue = NULL;  
 static QueueHandle_t morseRxQueue = NULL; 
 
+// Morse dictionary: each letter or number has a Morse code.
+typedef struct {
+    char character;
+    const char *code;
+} MorseEntry;
+
+// Morse code dictionary from:
+// https://www.programmersranch.com/2013/05/c-basics-morse-code-converter-using.html
+// Credit to the original author for the dictionary used below.
+static const MorseEntry morseDictionary[] = {
+    {'A', ".-"},
+    {'B', "-..."},
+    {'C', "-.-."},
+    {'D', "-.."},
+    {'E', "."},
+    {'F', "..-."},
+    {'G', "--."},
+    {'H', "...."},
+    {'I', ".."},
+    {'J', ".---"},
+    {'K', "-.-"},
+    {'L', ".-.."},
+    {'M', "--"},
+    {'N', "-."},
+    {'O', "---"},
+    {'P', ".--."},
+    {'Q', "--.-"},
+    {'R', ".-."},
+    {'S', "..."},
+    {'T', "-"},
+    {'U', "..-"},
+    {'V', "...-"},
+    {'W', ".--"},
+    {'X', "-..-"},
+    {'Y', "-.--"},
+    {'Z', "--.."},
+
+    {'0', "-----"},
+    {'1', ".----"},
+    {'2', "..---"},
+    {'3', "...--"},
+    {'4', "....-"},
+    {'5', "....."},
+    {'6', "-...."},
+    {'7', "--..."},
+    {'8', "---.."},
+    {'9', "----."}
+};
+
+#define MORSE_DICTIONARY_SIZE \
+    (sizeof(morseDictionary) / sizeof(morseDictionary[0]))
+
+static int text_to_morse(const char *text, char *output, size_t output_size)
+{
+    size_t output_index = 0;
+    int first_letter = 1;
+    int new_word = 0;
+
+    if (text == NULL || output == NULL || output_size == 0) {
+        return 0;
+    }
+
+    output[0] = '\0';
+
+    for (size_t i = 0; text[i] != '\0'; i++) {
+
+        char letter = text[i];
+
+        // Convert lowercase letters into uppercase.
+        if (letter >= 'a' && letter <= 'z') {
+            letter = letter - ('a' - 'A');
+        }
+
+        // Remember when a new word starts.
+        if (letter == ' ') {
+            if (!first_letter) {
+                new_word = 1;
+            }
+            continue;
+        }
+
+        // Find the character in the Morse dictionary.
+        const char *morse_code = NULL;
+
+        for (size_t j = 0; j < MORSE_DICTIONARY_SIZE; j++) {
+            if (morseDictionary[j].character == letter) {
+                morse_code = morseDictionary[j].code;
+                break;
+            }
+        }
+
+        // Character was not found in the dictionary.
+        if (morse_code == NULL) {
+            output[0] = '\0';
+            return 0;
+        }
+
+        // Add a separator before the next Morse letter.
+        if (!first_letter) {
+
+            if (new_word) {
+        // Two spaces between words.
+                if (output_index + 2 >= output_size) {
+            output[0] = '\0';
+            return 0;
+        }
+            output[output_index++] = ' ';
+            output[output_index++] = ' ';
+        }
+            else {
+                // One space between letters.
+                if (output_index + 1 >= output_size) {
+                    output[0] = '\0';
+                    return 0;
+                }
+
+                output[output_index++] = ' ';
+    }
+}
+        // Check whether the output buffer has enough space.
+        size_t code_length = strlen(morse_code);
+
+        if (output_index + code_length >= output_size) {
+            output[0] = '\0';
+            return 0;
+        }
+
+        // Copy the Morse code into the output.
+        for (size_t k = 0; k < code_length; k++) {
+            output[output_index++] = morse_code[k];
+        }
+
+        first_letter = 0;
+        new_word = 0;
+    }
+
+    output[output_index] = '\0';
+
+    return 1;
+}
+
+static int morse_to_text(const char *morse, char *output, size_t output_size)
+{
+    size_t output_index = 0;
+    size_t i = 0;
+
+    if (morse == NULL || output == NULL || output_size == 0) {
+        return 0;
+    }
+
+    output[0] = '\0';
+
+    while (morse[i] != '\0') {
+
+        // Check whether spaces separate letters or words.
+        if (morse[i] == ' ') {
+            int space_count = 0;
+
+            while (morse[i] == ' ') {
+                space_count++;
+                i++;
+            }
+
+    // Two spaces mean a new word.
+    if (space_count >= 2 && output_index > 0) {
+        if (output_index + 1 >= output_size) {
+            output[0] = '\0';
+            return 0;
+        }
+
+        output[output_index++] = ' ';
+    }
+    continue;
+}
+        // Read one complete Morse symbol.
+        char symbol[8];
+        size_t symbol_index = 0;
+
+        while (morse[i] != '\0' && morse[i] != ' ' && morse[i] != '/') {
+
+            if (symbol_index >= sizeof(symbol) - 1) {
+                output[0] = '\0';
+                return 0;
+            }
+
+            if (morse[i] != '.' && morse[i] != '-') {
+                output[0] = '\0';
+                return 0;
+            }
+
+            symbol[symbol_index++] = morse[i];
+            i++;
+        }
+
+        symbol[symbol_index] = '\0';
+
+        // Find the matching letter in the dictionary.
+        int found = 0;
+
+        for (size_t j = 0; j < MORSE_DICTIONARY_SIZE; j++) {
+
+            if (strcmp(morseDictionary[j].code, symbol) == 0) {
+
+                if (output_index + 1 >= output_size) {
+                    output[0] = '\0';
+                    return 0;
+                }
+
+                output[output_index++] = morseDictionary[j].character;
+                found = 1;
+                break;
+            }
+        }
+
+        // Invalid Morse sequence.
+        if (!found) {
+            output[0] = '\0';
+            return 0;
+        }
+    }
+
+    output[output_index] = '\0';
+
+    return 1;
+}
+
 /*#if   CFG_TUSB_OS == OPT_OS_FREERTOS
 #pragma message "TinyUSB: FreeRTOS"
 #elif CFG_TUSB_OS == OPT_OS_PICO
@@ -100,33 +326,99 @@ static void testMorseTask(void *arg)
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
-// Receives Morse symbols from the workstation and displays each complete message on the OLED.
+// Receives messages from the workstation, translates them,
+// displays the result on the OLED and sends it back.
 static void receiveTask(void *arg)
 {
     (void)arg;
 
     char ch;
-    char message[BUFFER_SIZE];
+    char message[128];
+    char translated[256];
     uint32_t index = 0;
 
     while (1) {
+
         if (xQueueReceive(morseRxQueue, &ch, portMAX_DELAY) == pdTRUE) {
 
+            // Ignore carriage return.
             if (ch == '\r') {
                 continue;
             }
 
+            // A newline means the complete message has arrived.
             if (ch == '\n') {
+
                 message[index] = '\0';
 
-                if (index > 0) {
-                    clear_display();
-                    write_text(message);
+                if (index >= 2) {
+
+                    int success = 0;
+
+                    // D: means display the original text without translating it.
+                    if (message[0] == 'D' && message[1] == ':') {
+                        
+                        // Copy the original message without the D: prefix.
+                        strcpy(translated, message + 2);
+                        
+                        success = 1;
+                    }
+
+                    // T: means text-to-Morse conversion.
+                    else if (message[0] == 'T' && message[1] == ':') {
+
+                        success = text_to_morse(
+                            message + 2,
+                            translated,
+                            sizeof(translated)
+                        );
+                    }
+
+                    // M: means Morse-to-text conversion.
+                    else if (message[0] == 'M' && message[1] == ':') {
+
+                        success = morse_to_text(
+                            message + 2,
+                            translated,
+                            sizeof(translated)
+                        );
+                    }
+
+                    // Show and send the translated result.
+                    if (success) {
+
+                        clear_display();
+                        write_text(translated);
+
+                        // Send every translated character through the existing USB sending task.
+                        for (size_t i = 0; translated[i] != '\0'; i++) {
+                            xQueueSend(
+                                morseTxQueue,
+                                &translated[i],
+                                portMAX_DELAY
+                            );
+                        }
+
+                        // Send newline to finish the response.
+                        char newline = '\n';
+                        xQueueSend(
+                            morseTxQueue,
+                            &newline,
+                            portMAX_DELAY
+                        );
+                    }
+                    else {
+                        clear_display();
+                        write_text("Invalid input");
+                    }
                 }
 
+                // Reset the message buffer for the next message.
                 index = 0;
             }
-            else if (index < BUFFER_SIZE - 1) {
+
+            // Store incoming characters while there is space.
+            else if (index < sizeof(message) - 1) {
                 message[index++] = ch;
             }
         }
