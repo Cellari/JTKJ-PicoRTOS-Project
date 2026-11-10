@@ -14,17 +14,17 @@
 #include <tusb.h>
 #include "usbSerialDebug/helper.h"
 
-#define BUFFER_SIZE     30
-#define TEMP_MIN        0
-#define TEMP_MAX        40
-#define LUX_MIN         100
-#define LUX_MAX         1500
-#define CDC_ITF_TX      1
-#define MORSE_QUEUE_LENGTH 128
+#define LOG_BUFFER_SIZE 30
+#define TEMP_MIN 0
+#define TEMP_MAX 40
+#define LUX_MIN 100
+#define LUX_MAX 1500
+#define CDC_ITF_DATA 1
+#define RX_QUEUE_LENGTH 128
 #define USER_INPUT_DELAY 200
-#define SENSOR_DELAY    40
-static QueueHandle_t morseTxQueue = NULL;  
-static QueueHandle_t morseRxQueue = NULL; 
+#define SENSOR_DELAY 40
+static QueueHandle_t morseTxQueue = NULL;
+static QueueHandle_t morseRxQueue = NULL;
 
 /*#if   CFG_TUSB_OS == OPT_OS_FREERTOS
 #pragma message "TinyUSB: FreeRTOS"
@@ -38,7 +38,8 @@ static QueueHandle_t morseRxQueue = NULL;
 #error "This should be using FREERTOS but the CFG_TUSB_OS is not OPT_OS_FREERTOS"
 #endif
 
-static int rand_in_range(int min, int max) {
+static int rand_in_range(int min, int max)
+{
     return min + rand() % (max - min + 1);
 }
 
@@ -49,23 +50,27 @@ static void sendTask(void *arg)
     char ch;
 
     // Wait until the USB device is mounted.
-    while (!tud_mounted()) {
+    while (!tud_mounted())
+    {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    while (1) {
+    while (1)
+    {
         // Wait until a Morse character is available.
-        if (xQueueReceive(morseTxQueue, &ch, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(morseTxQueue, &ch, portMAX_DELAY) == pdTRUE)
+        {
 
             // Wait until CDC1 is connected.
-            if (!tud_cdc_n_connected(CDC_ITF_TX)) {
+            if (!tud_cdc_n_connected(CDC_ITF_DATA))
+            {
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
 
             // Send one character to the workstation.
-            tud_cdc_n_write(CDC_ITF_TX, &ch, 1);
-            tud_cdc_n_write_flush(CDC_ITF_TX);
+            tud_cdc_n_write(CDC_ITF_DATA, &ch, 1);
+            tud_cdc_n_write_flush(CDC_ITF_DATA);
 
             // Use buzzer to indicate a succesful morse signal
             switch (ch)
@@ -90,9 +95,11 @@ static void testMorseTask(void *arg)
 
     const char *message = "... --- ...\n";
 
-    while (1) {
+    while (1)
+    {
         // Put each character into the queue for sendTask.
-        for (const char *p = message; *p != '\0'; p++) {
+        for (const char *p = message; *p != '\0'; p++)
+        {
             xQueueSend(morseTxQueue, p, portMAX_DELAY);
         }
 
@@ -106,38 +113,46 @@ static void receiveTask(void *arg)
     (void)arg;
 
     char ch;
-    char message[BUFFER_SIZE];
+    char message[LOG_BUFFER_SIZE];
     uint32_t index = 0;
 
-    while (1) {
-        if (xQueueReceive(morseRxQueue, &ch, portMAX_DELAY) == pdTRUE) {
+    while (1)
+    {
+        if (xQueueReceive(morseRxQueue, &ch, portMAX_DELAY) == pdTRUE)
+        {
 
-            if (ch == '\r') {
+            if (ch == '\r')
+            {
                 continue;
             }
 
-            if (ch == '\n') {
+            if (ch == '\n')
+            {
                 message[index] = '\0';
 
-                if (index > 0) {
+                if (index > 0)
+                {
                     clear_display();
                     write_text(message);
                 }
 
                 index = 0;
             }
-            else if (index < BUFFER_SIZE - 1) {
+            else if (index < LOG_BUFFER_SIZE - 1)
+            {
                 message[index++] = ch;
             }
         }
     }
 }
 // ---- Task running USB stack ----
-static void usbTask(void *arg) {
+static void usbTask(void *arg)
+{
     (void)arg;
-    while (1) {
-        tud_task();              // With FreeRTOS wait for events
-                                 // Do not add vTaskDelay. 
+    while (1)
+    {
+        tud_task(); // With FreeRTOS wait for events
+                    // Do not add vTaskDelay.
     }
 }
 
@@ -146,51 +161,58 @@ static void usbTask(void *arg) {
 /// @param low The low non-reachable boundary for the value
 /// @param high The high non-reachable boundary for the value
 /// @return true (1) if the value is between the boundary values, otherwise false (0)
-static inline int inBetween(const float *value, float low, float high) {
-    if (*value > low && *value < high) return 1;
-    else return 0;
+static inline int inBetween(const float *value, float low, float high)
+{
+    if (*value > low && *value < high)
+        return 1;
+    else
+        return 0;
 }
 
-static void listenMovementTask(void *pvParameters) {
+static void listenMovementTask(void *pvParameters)
+{
     (void)pvParameters;
 
     float ax, ay, az, gx, gy, gz, t;
-    
-    // Start device movement decodings for sending morse code. Infinite loop. 
-    uint8_t buf[BUFFER_SIZE];
+
+    // Start device movement decodings for sending morse code. Infinite loop.
+    uint8_t buf[LOG_BUFFER_SIZE];
     char prev_c;
     while (1)
     {
         char c = 0; // Local variable for each loop, sent to queue via address
-        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            #define MOTION_EDGE 80 // Used for ease of modification
-            if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE)
-                && !inBetween(&gy, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)
-                && !inBetween(&gz, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)) {
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
+        {
+#define MOTION_EDGE 80 // Used for ease of modification
+            if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE) && !inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) && !inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75))
+            {
                 c = '-';
-            } else if (!inBetween(&gx, -MOTION_EDGE*1.25, MOTION_EDGE*1.25)
-                    && (inBetween(&gy, -MOTION_EDGE*0.75, MOTION_EDGE*0.75)
-                    || inBetween(&gz, -MOTION_EDGE*0.75, MOTION_EDGE*0.75))) {
+            }
+            else if (!inBetween(&gx, -MOTION_EDGE * 1.25, MOTION_EDGE * 1.25) && (inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) || inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75)))
+            {
                 c = '.';
             }
 
             // Send results
-            if (c != 0 && prev_c != c) { // New user action
+            if (c != 0 && prev_c != c)
+            { // New user action
                 xQueueSend(morseTxQueue, &c, portMAX_DELAY);
-                
+
                 // Print the accepted action
-                sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+                sprintf(buf, "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
                 usb_serial_print(buf);
                 usb_serial_flush();
             }
-        } else {
+        }
+        else
+        {
             usb_serial_print("Failed to read imu data\n");
         }
 
         prev_c = c;
 
         // Adjust software responsiveness
-        if(c == 0)
+        if (c == 0)
             vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
         else
             vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
@@ -199,46 +221,50 @@ static void listenMovementTask(void *pvParameters) {
 
 /// @brief Listens to the IMU-sensor values to add morse code to the queue via device orientation
 /// @param pvParameters Unused
-static void listenOrientationTask(void *pvParameters) {
+static void listenOrientationTask(void *pvParameters)
+{
     (void)pvParameters;
 
     float ax, ay, az, gx, gy, gz, t;
-    
-    // Start device orientation decodings for sending morse code. Infinite loop. 
-    uint8_t buf[BUFFER_SIZE];
+
+    // Start device orientation decodings for sending morse code. Infinite loop.
+    uint8_t buf[LOG_BUFFER_SIZE];
     char prev_c;
     while (1)
     {
         char c = 0; // Local variable for each loop, sent to queue via address
-        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            if (inBetween(&ax, -0.4, 0.4) 
-                && inBetween(&ay, -0.4, 0.4) 
-                && !inBetween(&az, -0.6, 0.6)
-                && inBetween(&gx, -60, 60)) {
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
+        {
+            if (inBetween(&ax, -0.4, 0.4) && inBetween(&ay, -0.4, 0.4) && !inBetween(&az, -0.6, 0.6) && inBetween(&gx, -60, 60))
+            {
                 c = '-';
-            } else if (inBetween(&ax, -0.4, 0.4) 
-                    && !inBetween(&ay, -0.6, 0.6) 
-                    && inBetween(&az, -0.4, 0.4)
-                    && inBetween(&gx, -60, 60)) {
+            }
+            else if (inBetween(&ax, -0.4, 0.4) && !inBetween(&ay, -0.6, 0.6) && inBetween(&az, -0.4, 0.4) && inBetween(&gx, -60, 60))
+            {
                 c = '.';
             }
 
             // Send results
-            if (c == 0) {
-                sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+            if (c == 0)
+            {
+                sprintf(buf, "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
                 usb_serial_print(buf);
                 usb_serial_flush();
-            } else if (prev_c != c) { // New user action
+            }
+            else if (prev_c != c)
+            { // New user action
                 xQueueSend(morseTxQueue, &c, portMAX_DELAY);
             }
-        } else {
+        }
+        else
+        {
             usb_serial_print("Failed to read imu data\n");
         }
 
         prev_c = c;
 
         // Adjust software responsiveness
-        if(c == 0)
+        if (c == 0)
             vTaskDelay(pdMS_TO_TICKS(SENSOR_DELAY));
         else
             vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
@@ -248,13 +274,15 @@ static void listenOrientationTask(void *pvParameters) {
 /// @brief Button caller to control the space input to the workstation
 /// @param gpio Unused
 /// @param eventMask Unused
-static void btn_fxn(uint gpio, uint32_t eventMask) {
+static void btn_fxn(uint gpio, uint32_t eventMask)
+{
     char c = ' ';
     xQueueSend(morseTxQueue, &c, portMAX_DELAY);
 }
 
-int main (void) {
-    //Generating random seed
+int main(void)
+{
+    // Generating random seed
     srand((unsigned)time(NULL));
     // Initialize the JTKJ Hat and OLED display.
     init_hat_sdk();
@@ -269,35 +297,42 @@ int main (void) {
     // Initialize Buzzer
     init_buzzer();
 
-    // Setting up the imu-sensor. 
-    if (init_ICM42670() == 0) {
+    // Setting up the imu-sensor.
+    if (init_ICM42670() == 0)
+    {
         usb_serial_print("ICM-42670P initialized successfully!\n");
-        if (ICM42670_start_with_default_values() != 0){
+        if (ICM42670_start_with_default_values() != 0)
+        {
             usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
         }
-    } else {
+    }
+    else
+    {
         usb_serial_print("Failed to initialize ICM-42670P.\n");
     }
 
     // Queue for outgoing Morse characters.
-    morseTxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
-    
+    morseTxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
 
-    if (morseTxQueue == NULL) {
-        while (1) {
+    if (morseTxQueue == NULL)
+    {
+        while (1)
+        {
             // Stop if the queue could not be created.
         }
     }
     // Queue for incoming Morse characters.
-morseRxQueue = xQueueCreate(MORSE_QUEUE_LENGTH, sizeof(char));
+    morseRxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
 
-if (morseRxQueue == NULL) {
-    while (1) {
-        // Stop if the queue could not be created.
+    if (morseRxQueue == NULL)
+    {
+        while (1)
+        {
+            // Stop if the queue could not be created.
+        }
     }
-}
     // Create tasks
-    TaskHandle_t hUsb   = NULL;
+    TaskHandle_t hUsb = NULL;
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
 
@@ -306,29 +341,32 @@ if (morseRxQueue == NULL) {
     // xTaskCreate(listenOrientationTask, "imu", 1024, NULL, 1, NULL);
     xTaskCreate(listenMovementTask, "imu", 1024, NULL, 1, NULL);
 
-    #if (configNUMBER_OF_CORES > 1)
-        vTaskCoreAffinitySet(hUsb, 1u << 0);
-    #endif
-    
+#if (configNUMBER_OF_CORES > 1)
+    vTaskCoreAffinitySet(hUsb, 1u << 0);
+#endif
+
     // VERY IMPORTANT, THIS SHOULD GO JUST BEFORE vTaskStartSheduler
     // WITHOUT ANY DELAYS. OTHERWISE, THE TinyUSB stack wont recognize
     // the device.
-    // Initialize TinyUSB 
+    // Initialize TinyUSB
     tusb_init();
-    //Initialize helper library to write in CDC0)
+    // Initialize helper library to write in CDC0)
     usb_serial_init();
     vTaskStartScheduler();
     return 0;
 }
 
 // Called by the USB task when a CDC interface receives data.
-void tud_cdc_rx_cb(uint8_t itf) {
+void tud_cdc_rx_cb(uint8_t itf)
+{
     // Reserve two extra bytes for the newline and string terminator.
     char buf[CFG_TUD_CDC_RX_BUFSIZE + 2];
     uint32_t count = tud_cdc_n_read(itf, buf, sizeof(buf) - 2);
     // Put incoming Morse characters into the receiving queue.
-    if (itf == 1 && count > 0) {
-        for (uint32_t i = 0; i < count; i++) {
+    if (itf == 1 && count > 0)
+    {
+        for (uint32_t i = 0; i < count; i++)
+        {
             xQueueSend(morseRxQueue, &buf[i], 0);
         }
     }
@@ -336,8 +374,10 @@ void tud_cdc_rx_cb(uint8_t itf) {
     buf[count + 1] = '\0';
 
     // Also read CDC0 so that its receive buffer does not fill up.
-    if (itf == 1 && count > 0) {
-        if (tud_cdc_n_connected(0)) {
+    if (itf == 1 && count > 0)
+    {
+        if (tud_cdc_n_connected(0))
+        {
             // Nonblocking writes: do not use the waiting logger here.
             // Meaning, do not use usb_serial_print() or usb_serial_flush() here.
             const char *prefix = "\nReceived on CDC 1:";
@@ -347,7 +387,8 @@ void tud_cdc_rx_cb(uint8_t itf) {
             tud_cdc_n_write_flush(0);
         }
 
-        if (tud_cdc_n_connected(1)) {
+        if (tud_cdc_n_connected(1))
+        {
             tud_cdc_n_write(1, "OK\n", 3);
             tud_cdc_n_write_flush(1);
         }
