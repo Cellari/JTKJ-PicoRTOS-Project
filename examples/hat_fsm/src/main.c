@@ -259,6 +259,23 @@ void HandleLcdTask(void *pvParameters)
                 // write_text_xy function requires a null-terminated str as a parameter
                 char for_display[2] = {queue_char, '\0'};
                 smart_display_text(&x_ind, &y_ind, for_display);
+
+                // Use buzzer to indicate a succesful morse signal
+                switch (queue_char)
+                {
+                case '.':
+                    buzzer_play_tone(110, 50);
+                    break;
+                case '-':
+                    buzzer_play_tone(330, 50);
+                    break;
+                case ' ':
+                    buzzer_play_tone(220, 150);
+                    break;
+                default:
+                    break;
+                }
+
                 ind += 1;
             }
         }
