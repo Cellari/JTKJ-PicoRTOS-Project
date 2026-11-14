@@ -11,6 +11,7 @@
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
+#include "pico/cyw43_arch.h"
 
 #include <tusb.h>
 #include "usbSerialDebug/helper.h"
@@ -34,6 +35,7 @@
 #define TX_QUEUE_LENGTH 128
 #define USER_INPUT_DELAY 200
 #define SENSOR_DELAY 40
+#define SCAN_DELAY 1000
 
 #define MAX_OLED_WIDTH 21
 #define MAX_OLED_HEIGHT 7     // given that 1 line ~ 9px in height
@@ -65,6 +67,7 @@ TaskHandle_t HandleLcdTaskHandle = NULL;
 TaskHandle_t SendTaskHandle = NULL;
 TaskHandle_t UsbTaskHandle = NULL;
 TaskHandle_t ListenImuTaskHandle = NULL;
+TaskHandle_t ScanWHandle = NULL;
 
 // initializes semaphores
 SemaphoreHandle_t serialSemaphore = NULL;
@@ -435,6 +438,37 @@ static void listenMovementTask(void *pvParameters)
     }
 }
 
+// Copied from from here:
+// https://github.com/raspberrypi/pico-examples/blob/0d62f75bafc2c8120d3276c3343d1a9195e909e9/pico_w/wifi/wifi_scan/picow_wifi_scan.c#L12
+static int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
+    if (result) {
+        char _msg[30];
+        sprintf(_msg, "ssid: %-32s rssi: %4d chan: %3d mac: %02x:%02x:%02x:%02x:%02x:%02x sec: %u\n",
+            result->ssid, result->rssi, result->channel,
+            result->bssid[0], result->bssid[1], result->bssid[2], result->bssid[3], result->bssid[4], result->bssid[5],
+            result->auth_mode);
+            usb_serial_print(_msg);
+    }
+    return 0;
+}
+
+static void scanWTask(void *pvParameters) {
+    (void)pvParameters;
+    char _msg[30];
+    while(true) {
+        if (!cyw43_wifi_scan_active(&cyw43_state)) {
+            cyw43_wifi_scan_options_t scan_options = {0};
+            int err = cyw43_wifi_scan(&cyw43_state, &scan_options, NULL, scan_result);
+            if (err != 0) {
+                sprintf(_msg, "Failed to start scan: %d\n", err);
+                uart_puts(uart0, _msg);
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(SCAN_DELAY));
+    }
+}
+
 int main()
 {
     // Generating random seed
@@ -466,6 +500,14 @@ int main()
         usb_serial_print("Failed to initialize ICM-42670P.\n");
     }
 
+    // Initialize wifi
+    if (cyw43_arch_init()) {
+        usb_serial_print("failed to initialise\n");
+    } else {
+        cyw43_arch_enable_sta_mode();
+        cyw43_arch_poll();
+    }
+
     currentState = IDLE;
 
     // creates binary semaphores
@@ -490,6 +532,9 @@ int main()
 
     BaseType_t result_imu = xTaskCreate(
         listenMovementTask, "imu", 1024, (void *)127, 1, &ListenImuTaskHandle);
+
+    BaseType_t result_wifi = xTaskCreate(
+        scanWTask, "wifi_scan", STACKSIZE, (void *)127, 1, &ScanWHandle);
 
     tusb_init();
     usb_serial_init();
