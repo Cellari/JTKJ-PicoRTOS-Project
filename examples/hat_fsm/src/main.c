@@ -99,6 +99,28 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
 }
 
+// Use buzzer to indicate a succesful morse signal
+void char_to_buzz(char ch)
+{
+    switch (ch)
+    {
+    case '.':
+        buzzer_play_tone(110, 50);
+        break;
+    case '-':
+        buzzer_play_tone(330, 50);
+        break;
+    case ' ':
+        buzzer_play_tone(220, 150);
+        break;
+    case '\n':
+        buzzer_play_tone(440, 200);
+        break;
+    default:
+        break;
+    }
+}
+
 // button interrupt handler
 void btnFxn(uint gpio, uint32_t events)
 {
@@ -111,7 +133,7 @@ void btnFxn(uint gpio, uint32_t events)
         // indicates that there's no need to switch to another task right away
         // gives btnSemaphore for send_task
         xSemaphoreGiveFromISR(btnSemaphore, &xHigherPriorityTaskWoken);
-    } // if program is in SEND, button inputs spaces/EOM
+    } // if program is in SEND, button inputs spaces
     else if (currentState == SEND)
     {
         char c = ' ';
@@ -220,6 +242,13 @@ void HandleLcdTask(void *pvParameters)
             // clears display, displays translation, switches state to IDLE
             if (queue_char == '\n')
             {
+                char for_display[2] = {queue_char, '\0'};
+                smart_display_text(&x_ind, &y_ind, for_display);
+
+                char_to_buzz('\n');
+                
+                morse_msg[ind] = '\0';
+
                 // logging
                 char log_buf[LOG_BUFFER_SIZE];
                 snprintf(log_buf, sizeof(log_buf),
@@ -228,8 +257,6 @@ void HandleLcdTask(void *pvParameters)
                 usb_serial_print(log_buf);
                 usb_serial_flush();
                 // logging
-
-                morse_msg[ind] = '\0';
 
                 clear_display();
                 ind = 0;
@@ -257,24 +284,15 @@ void HandleLcdTask(void *pvParameters)
             {
                 morse_msg[ind] = queue_char;
                 // write_text_xy function requires a null-terminated str as a parameter
+
+                // if this is a new message, clear display first
+                if (ind == 0)
+                    clear_display();
+
                 char for_display[2] = {queue_char, '\0'};
                 smart_display_text(&x_ind, &y_ind, for_display);
 
-                // Use buzzer to indicate a succesful morse signal
-                switch (queue_char)
-                {
-                case '.':
-                    buzzer_play_tone(110, 50);
-                    break;
-                case '-':
-                    buzzer_play_tone(330, 50);
-                    break;
-                case ' ':
-                    buzzer_play_tone(220, 150);
-                    break;
-                default:
-                    break;
-                }
+                char_to_buzz(queue_char);
 
                 ind += 1;
             }
@@ -282,7 +300,6 @@ void HandleLcdTask(void *pvParameters)
     }
 }
 
-// activated with a button interrupt
 void SendTask(void *pvParameters)
 {
     char queue_char;
@@ -333,13 +350,30 @@ void SendTask(void *pvParameters)
 
                         // logging
                         char log_buf[LOG_BUFFER_SIZE];
-                        snprintf(log_buf, sizeof(log_buf), "[SendTask] State = %d; EOM generated; Morse generated: \"%s\"\n\n", currentState, morse_buf);
+                        // log last character
+                        snprintf(log_buf, sizeof(log_buf),
+                                 "[SendTask] State = %d; Symbol sent: \"\\n\"\n\n", currentState, queue_char);
+                        usb_serial_print(log_buf);
+                        usb_serial_flush();
+                        // log the entire message
+                        snprintf(log_buf, sizeof(log_buf), "[SendTask] State = %d; EOM generated; Morse generated: \"%s\\n\"\n\n", currentState, morse_buf);
                         usb_serial_print(log_buf);
                         usb_serial_flush();
                         // logging
 
+                        // send \n over serial
+                        tud_cdc_n_write(CDC_ITF_DATA, &queue_char, 1);
+                        tud_cdc_n_write_flush(CDC_ITF_DATA);
+
+                        char_to_buzz('\n');
+
+                        // reset buffer (every value is 0)
                         memset(morse_buf, 0, sizeof(morse_buf));
+                        // reset buffer index
                         ind = 0;
+
+                        // skip the rest of the loop code
+                        continue;
                     }
                     else
                         conseq_spaces += 1;
@@ -361,18 +395,7 @@ void SendTask(void *pvParameters)
                 usb_serial_flush();
                 // logging
 
-                switch (queue_char)
-                {
-                case '.':
-                    buzzer_play_tone(110, 50);
-                    break;
-                case '-':
-                    buzzer_play_tone(330, 50);
-                    break;
-                case ' ':
-                    buzzer_play_tone(220, 150);
-                    break;
-                }
+                char_to_buzz(queue_char);
             }
         }
     }
@@ -391,6 +414,9 @@ static void listenMovementTask(void *pvParameters)
     {
         if (xSemaphoreTake(btnSemaphore, portMAX_DELAY) == pdTRUE)
         {
+            clear_display();
+            write_text("MODE: SEND");
+
             prev_c = 0;
             while (currentState == SEND)
             {
@@ -431,6 +457,9 @@ static void listenMovementTask(void *pvParameters)
                 else
                     vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
             }
+
+            clear_display();
+            write_text("IDLE");
         }
     }
 }
@@ -443,7 +472,7 @@ int main()
     init_hat_sdk();
     init_display();
     clear_display();
-    write_text("Working");
+    write_text("IDLE");
 
     // Set the control button
     init_sw1();
@@ -492,6 +521,7 @@ int main()
         listenMovementTask, "imu", 1024, (void *)127, 1, &ListenImuTaskHandle);
 
     tusb_init();
+
     usb_serial_init();
     vTaskStartScheduler();
 
