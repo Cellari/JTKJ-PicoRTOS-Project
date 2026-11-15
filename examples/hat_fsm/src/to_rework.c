@@ -491,6 +491,8 @@ static inline int inBetween(const float *value, float low, float high)
         return 0;
 }
 
+/// @brief Listens to the IMU-sensor values to add morse code to the queue via device movement
+/// @param pvParameters Unused
 static void listenMovementTask(void *pvParameters)
 {
     (void)pvParameters;
@@ -505,7 +507,7 @@ static void listenMovementTask(void *pvParameters)
         char c = 0; // Local variable for each loop, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
         {
-#define MOTION_EDGE 80 // Used for ease of modification
+            #define MOTION_EDGE 80 // Used for ease of modification
             if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE) && !inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) && !inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75))
             {
                 c = '-';
