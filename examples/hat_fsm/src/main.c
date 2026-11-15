@@ -116,7 +116,8 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
 }
 
-// Use buzzer to indicate a succesful morse signal
+/// @brief Use buzzer to indicate a succesful morse signal
+/// @param ch Accepts either '.', '-', ' ' or '\n'
 void char_to_buzz(char ch)
 {
     switch (ch)
@@ -138,7 +139,9 @@ void char_to_buzz(char ch)
     }
 }
 
-// button interrupt handler
+/// @brief Function used for the button interrupt handler
+/// @param gpio Unused
+/// @param events Unused
 void btnFxn(uint gpio, uint32_t events)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -476,6 +479,8 @@ void SendTask(void *pvParameters)
     }
 }
 
+/// @brief Listens to the IMU-sensor values to add morse code to the queue via device movement
+/// @param pvParameters Unused
 static void listenMovementTask(void *pvParameters)
 {
     (void)pvParameters;
@@ -593,7 +598,7 @@ int main()
         usbTask, "TinyUSB", STACKSIZE, (void *)127, 2, &UsbTaskHandle);
 
     BaseType_t result_imu = xTaskCreate(
-        listenMovementTask, "imu", 1024, (void *)127, 1, &ListenImuTaskHandle);
+        listenMovementTask, "imu", STACKSIZE, (void *)127, 1, &ListenImuTaskHandle);
 
     tusb_init();
 
