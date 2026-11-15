@@ -76,9 +76,16 @@ SemaphoreHandle_t btnSemaphore = NULL;
 QueueHandle_t morseRxQueue = NULL;
 QueueHandle_t morseTxQueue = NULL;
 
-// runs tud_task() responsilbe for TinyUSB handling USB connection
-// activates on hardware usb interrupt, activates callback functions
-// needs to preempt any other task
+/**
+ * @brief Runs the TinyUSB device service continuously.
+ *
+ * TinyUSB requires tud_task() to be called regularly so that USB events,
+ * connection changes and CDC communication callbacks can be processed.
+ *
+ * This task runs independently of the application tasks, allowing USB
+ * communication events to be handled while other operations are running.
+ */
+
 void usbTask(void *arg)
 {
     (void)arg;
@@ -88,11 +95,21 @@ void usbTask(void *arg)
     }
 }
 
-// callback executed automatically by TinyUSB
-// itf indicates which port (CDC0 or CDC1) received data
+/**
+ * @brief TinyUSB callback triggered when data arrives through a CDC interface.
+ *
+ * The callback checks that the incoming data belongs to the communication
+ * interface rather than the debugging interface.
+ *
+ * When the device is not transmitting, the serial semaphore is released.
+ * This wakes ReadSerialTask, which then reads the available USB data.
+ *
+ * @param itf CDC interface that received the data.
+ */
 void tud_cdc_rx_cb(uint8_t itf)
 {
     // condition ensures program only processes data from CDC1
+    // incoming data is ignored while the device is on SEND mode
     if (itf == CDC_ITF_DATA && currentState != SEND)
     {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -144,8 +161,21 @@ void btnFxn(uint gpio, uint32_t events)
     }
 }
 
-// takes the binary semaphore serialSemaphore which in turn is given by serial ISR
-// drains the serial buffer and adds read characters to RTOS Queue
+/**
+ * @brief Reads incoming USB serial data and places it in the receive queue.
+ *
+ * This task remains blocked until serialSemaphore is released by the
+ * TinyUSB receive callback.
+ *
+ * Once notified, it:
+ * 1. Changes the program state to RECEIVE.
+ * 2. Reads available characters from the USB CDC communication interface.
+ * 3. Transfers each received character into morseRxQueue.
+ *
+ * The queue separates USB data acquisition from message processing and
+ * display updates, allowing the two operations to run independently.
+ */
+
 void ReadSerialTask(void *pvParameters)
 {
     char buf[CFG_TUD_CDC_RX_BUFSIZE + 2];
@@ -185,8 +215,24 @@ void ReadSerialTask(void *pvParameters)
     }
 }
 
-// function that displays text on oled, takes care of display constraints
-// txt - null-terminated string
+/**
+ * @brief Displays a null-terminated string while managing OLED screen limits.
+ *
+ * The function converts character positions into pixel coordinates and
+ * displays the supplied text one character at a time.
+ *
+ * When the current line is full, the cursor moves to the next line.
+ * When the entire display is full, the screen is cleared and the cursor
+ * returns to the top-left corner.
+ *
+ * The cursor coordinates are passed by reference so their updated positions
+ * are retained by the calling function.
+ *
+ * @param x_ind Pointer to the current horizontal character position.
+ * @param y_ind Pointer to the current vertical character position.
+ * @param txt Null-terminated string to display.
+ */
+
 void smart_display_text(uint32_t *x_ind, uint32_t *y_ind, char *txt)
 {
     for (uint32_t i = 0; txt[i] != '\0'; i++)
@@ -214,6 +260,20 @@ void smart_display_text(uint32_t *x_ind, uint32_t *y_ind, char *txt)
 }
 
 // is activated when characters are added to RTOS Queue
+
+/**
+ * @brief Processes received Morse characters and displays the result.
+ *
+ * This task is responsible for the main receiving workflow after USB data
+ * has been placed in morseRxQueue.
+ *
+ * It processes incoming characters individually and displays the Morse
+ * sequence on the OLED while providing buzzer feedback.
+ *
+ * A newline character marks the end of a message. At that point, the complete
+ * Morse sequence is passed to morse_to_text(), which converts it into
+ * readable text. The translated message is then displayed on the OLED.
+ */
 void HandleLcdTask(void *pvParameters)
 {
     char queue_char;
@@ -302,7 +362,22 @@ void HandleLcdTask(void *pvParameters)
         }
     }
 }
-
+/**
+ * @brief Transmits generated Morse symbols through USB CDC.
+ *
+ * This task consumes characters from morseTxQueue and sends them to the
+ * connected computer through the USB communication interface.
+ *
+ * The task waits for USB to be mounted before beginning normal operation.
+ * During transmission, it checks that the CDC interface is connected before
+ * sending each character.
+ *
+ * Three consecutive spaces are interpreted as the end of a message.
+ * They are replaced with a newline character, which acts as the message
+ * terminator on the receiving side.
+ *
+ * Each transmitted symbol is also sent to the buzzer for audio feedback.
+ */
 void SendTask(void *pvParameters)
 {
     char queue_char;
