@@ -1,15 +1,27 @@
 #include "morse_utils.h"
 #include <string.h>
 
-// Morse dictionary: each letter or number has a Morse code.
+/**
+ * @brief Stores a character and its corresponding Morse code.
+ *
+ * Each entry links an uppercase letter or digit to its Morse code
+ * representation. The dictionary is used by both conversion functions.
+ */
 typedef struct {
     char character;
     const char *code;
 } MorseEntry;
 
-// Morse code dictionary from:
-// https://www.programmersranch.com/2013/05/c-basics-morse-code-converter-using.html
-// Credit to the original author for the dictionary used below.
+/**
+ * @brief Lookup table containing Morse code representations.
+ *
+ * Morse code dictionary from:
+ * https://www.programmersranch.com/2013/05/c-basics-morse-code-converter-using.html
+ * Credit to the original author for the dictionary used below.
+ * 
+ * The table supports uppercase letters A-Z and digits 0-9.
+ * It is shared by the text-to-Morse and Morse-to-text functions.
+ */
 static const MorseEntry morseDictionary[] = {
     {'A', ".-"},
     {'B', "-..."},
@@ -49,6 +61,23 @@ static const MorseEntry morseDictionary[] = {
     {'8', "---.."},
     {'9', "----."}
 };
+
+/**
+ * @brief Converts a Morse code sequence into readable text.
+ *
+ * Reads Morse symbols separated by spaces and looks up each symbol
+ * in the Morse dictionary to find its corresponding character.
+ *
+ * One space separates letters, while two or more spaces separate words.
+ *
+ * The function checks for invalid Morse symbols and insufficient
+ * output buffer space. If conversion fails, the output is cleared.
+ *
+ * @param morse Input Morse code string.
+ * @param output Buffer where the translated text is stored.
+ * @param output_size Maximum size of the output buffer.
+ * @return 1 if conversion succeeds, or 0 if it fails.
+ */
 
 #define MORSE_DICTIONARY_SIZE \
     (sizeof(morseDictionary) / sizeof(morseDictionary[0]))
@@ -137,6 +166,23 @@ int morse_to_text(const char *morse, char *output, size_t output_size)
 
     return 1;
 }
+/**
+ * @brief Converts readable text into Morse code.
+ *
+ * Looks up each character in the Morse dictionary and appends its
+ * corresponding Morse representation to the output buffer.
+ *
+ * Lowercase letters are converted to uppercase before lookup.
+ * One space separates Morse letters, while two spaces separate words.
+ *
+ * The function checks for unsupported characters and insufficient
+ * output buffer space. If conversion fails, the output is cleared.
+ *
+ * @param text Input text string.
+ * @param output Buffer where the Morse code is stored.
+ * @param output_size Maximum size of the output buffer.
+ * @return 1 if conversion succeeds, or 0 if it fails.
+ */
 
 int text_to_morse(const char *text, char *output, size_t output_size)
 {
