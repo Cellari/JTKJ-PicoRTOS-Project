@@ -503,32 +503,35 @@ static void listenMovementTask(void *pvParameters)
                 char c = 0; // Local variable for each loop, sent to queue via address
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
                 {
+                    // Detection for horizontal movement
                     if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE) && !inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) && !inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75))
                     {
                         c = '-';
                     }
+                    // Detection for vertical movement
                     else if (!inBetween(&gx, -MOTION_EDGE * 1.25, MOTION_EDGE * 1.25) && (inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) || inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75)))
                     {
                         c = '.';
                     }
 
-                    // Send results
+                    // Detect the input is a new user action
                     if (c != 0 && prev_c != c)
-                    { // New user action
+                    {
+                        // Send character to the queue
                         xQueueSend(morseTxQueue, &c, portMAX_DELAY);
 
-                        // Print the accepted action
+                        // Print the accepted action values
                         sprintf(buf, "[listenMovementTask] Generated: %c; Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f\n\n", c, ax, ay, az, gx, gy, gz);
                         usb_serial_print(buf);
                         usb_serial_flush();
                     }
                 }
-
                 else
                 {
                     usb_serial_print("Failed to read imu data\n");
                 }
 
+                // Remember the previous user action outcome
                 prev_c = c;
 
                 // Adjust software responsiveness
