@@ -421,6 +421,8 @@ void SendTask(void *pvParameters)
                     if (conseq_spaces == 2)
                     {
                         queue_char = '\n';
+                        // Blink the red LED once when the message ends.
+                        blink_led(1);
                         conseq_spaces = 0;
                         currentState = IDLE;
 
@@ -553,6 +555,8 @@ int main()
     srand((unsigned)time(NULL));
     // Initialize the JTKJ Hat and OLED display.
     init_hat_sdk();
+    // Initialize the red LED.
+    init_led();
     init_display();
     clear_display();
     write_text("IDLE");
