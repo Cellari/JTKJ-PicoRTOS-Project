@@ -18,34 +18,29 @@
 #include "morse_utils.h"
 #include "utils.h"
 
+// BUFFERS
 #define LOG_BUFFER_SIZE 128
-#define TEMP_MIN 0
-#define TEMP_MAX 40
-#define LUX_MIN 100
-#define LUX_MAX 1500
+#define RX_TX_BUFFER_SIZE 256
 
-// ports
+// PORTS
 #define CDC_ITF_DATA 1
 #define CDC_ITF_DEBUG 0
 
-// size of serial input buffer
-
+// IMU
 #define RX_QUEUE_LENGTH 128
 #define TX_QUEUE_LENGTH 128
 #define USER_INPUT_DELAY 200
 #define SENSOR_DELAY 40
+#define MOTION_EDGE 80
 
+// OLED
 #define MAX_OLED_WIDTH 21
-#define MAX_OLED_HEIGHT 7     // given that 1 line ~ 9px in height
-#define MAX_OLED_CHAR_NUM 147 // 21 * 7
+#define MAX_OLED_HEIGHT 7 
+#define MAX_OLED_CHAR_NUM 147
 #define CHAR_OLED_WIDTH 6
 #define CHAR_OLED_HEIGHT 7
 
-#define MAX_RX_LENGTH 256
-
-#define MOTION_EDGE 80
-
-// standard task stacksize
+// RTOS
 #define STACKSIZE 1024
 
 // see state machine diagram for description of each state
@@ -72,6 +67,28 @@ SemaphoreHandle_t btnSemaphore = NULL;
 
 QueueHandle_t morseRxQueue = NULL;
 QueueHandle_t morseTxQueue = NULL;
+
+/**
+ * @brief Helper function used for logging.
+ * Takes state as a parameter and return its name as a string
+ * 
+ * @param state 
+ * @return char* 
+ */
+char* state_to_str(programState state){
+    switch(state){
+        case IDLE: 
+            return "IDLE";
+        case RECEIVE:
+            return "RECEIVE";
+        case UPDATE_LCD:
+            return "UPDATE_LCD";
+        case SEND:
+            return "SEND";
+        default:
+            return "UNDEFINED";
+    }
+}
 
 /**
  * @brief Runs the TinyUSB device service continuously.
@@ -218,7 +235,7 @@ void ReadSerialTask(void *pvParameters)
 /**
  * @brief Displays a null-terminated string while managing OLED screen limits.
  *
- * The function converts character positions into pixel coordinates and
+ * The function converts character positions into pixel on-screen coordinates and
  * displays the supplied text one character at a time.
  *
  * When the current line is full, the cursor moves to the next line.
@@ -278,8 +295,8 @@ void HandleLcdTask(void *pvParameters)
 {
     char queue_char;
 
-    char morse_msg[MAX_RX_LENGTH];
-    char msg_translation[MAX_RX_LENGTH];
+    char morse_msg[RX_TX_BUFFER_SIZE];
+    char msg_translation[RX_TX_BUFFER_SIZE];
 
     uint32_t ind = 0;
     uint32_t x_ind = 0;
@@ -327,7 +344,7 @@ void HandleLcdTask(void *pvParameters)
                 y_ind = 0;
 
                 // translates morse message, puts result in msg_translation
-                morse_to_text(morse_msg, msg_translation, MAX_RX_LENGTH);
+                morse_to_text(morse_msg, msg_translation, RX_TX_BUFFER_SIZE);
                 smart_display_text(&x_ind, &y_ind, msg_translation);
 
                 // resets the msg buffer
@@ -383,7 +400,7 @@ void SendTask(void *pvParameters)
     char queue_char;
     uint8_t conseq_spaces = 0;
 
-    char morse_buf[MAX_RX_LENGTH];
+    char morse_buf[RX_TX_BUFFER_SIZE];
     uint16_t ind = 0;
 
     while (!tud_mounted())
