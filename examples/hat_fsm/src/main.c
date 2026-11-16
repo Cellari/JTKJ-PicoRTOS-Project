@@ -11,7 +11,11 @@
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
+
 #include "pico/cyw43_arch.h"
+#define AP_SSID "panoulu"
+#define AP_PSWD NULL
+#define AP_AUTH_TYPE CYW43_AUTH_OPEN
 
 #include <tusb.h>
 #include "usbSerialDebug/helper.h"
@@ -550,20 +554,29 @@ static void listenMovementTask(void *pvParameters)
     }
 }
 
-// Copied from from here:
-// https://github.com/raspberrypi/pico-examples/blob/0d62f75bafc2c8120d3276c3343d1a9195e909e9/pico_w/wifi/wifi_scan/picow_wifi_scan.c#L12
+/// @brief Callback function for handling scan results
+/// @param env Unused
+/// @param result Unused
+/// @return 0
 static int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
-    if (result) {
+    // Based on github.com/raspberrypi/pico-examples picow_wifi_scan.c:scan_result function
+    if (result && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) < CYW43_LINK_JOIN) {
         char _msg[30];
         sprintf(_msg, "ssid: %-32s rssi: %4d chan: %3d mac: %02x:%02x:%02x:%02x:%02x:%02x sec: %u\n",
             result->ssid, result->rssi, result->channel,
             result->bssid[0], result->bssid[1], result->bssid[2], result->bssid[3], result->bssid[4], result->bssid[5],
             result->auth_mode);
-            usb_serial_print(_msg);
+        usb_serial_print(_msg);
+
+        if(strcmp(result->ssid, AP_SSID) == 0) {
+            cyw43_arch_wifi_connect_async(AP_SSID, AP_PSWD, AP_AUTH_TYPE);
+        }
     }
     return 0;
 }
 
+/// @brief Initialises and constantly scans for networks when not connected into one
+/// @param pvParameters Unused
 static void wirelessTask(void *pvParameters) {
     (void)pvParameters;
 
@@ -577,12 +590,13 @@ static void wirelessTask(void *pvParameters) {
     
     char _msg[30];
     while(true) {
-        if (!cyw43_wifi_scan_active(&cyw43_state)) {
+        // Based on github.com/raspberrypi/pico-examples picow_wifi_scan.c:scan_worker_fn function feature
+        if (!cyw43_wifi_scan_active(&cyw43_state) && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) < CYW43_LINK_JOIN) {
             cyw43_wifi_scan_options_t scan_options = {0};
             int err = cyw43_wifi_scan(&cyw43_state, &scan_options, NULL, scan_result);
             if (err != 0) {
                 sprintf(_msg, "Failed to start scan: %d\n", err);
-                uart_puts(uart0, _msg);
+                usb_serial_print(_msg);
             }
         }
         
