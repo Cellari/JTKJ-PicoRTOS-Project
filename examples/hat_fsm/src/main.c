@@ -556,8 +556,17 @@ static int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
     return 0;
 }
 
-static void scanWTask(void *pvParameters) {
+static void wirelessTask(void *pvParameters) {
     (void)pvParameters;
+
+    // Initialize wifi
+    if (cyw43_arch_init()) {
+        usb_serial_print("failed to initialise\n");
+    } else {
+        cyw43_arch_enable_sta_mode();
+        cyw43_arch_poll();
+    }
+    
     char _msg[30];
     while(true) {
         if (!cyw43_wifi_scan_active(&cyw43_state)) {
@@ -604,14 +613,6 @@ int main()
         usb_serial_print("Failed to initialize ICM-42670P.\n");
     }
 
-    // Initialize wifi
-    if (cyw43_arch_init()) {
-        usb_serial_print("failed to initialise\n");
-    } else {
-        cyw43_arch_enable_sta_mode();
-        cyw43_arch_poll();
-    }
-
     currentState = IDLE;
 
     // creates binary semaphores
@@ -638,7 +639,7 @@ int main()
         listenMovementTask, "imu", 1024, (void *)127, 1, &ListenImuTaskHandle);
 
     BaseType_t result_wifi = xTaskCreate(
-        scanWTask, "wifi_scan", STACKSIZE, (void *)127, 1, &ScanWHandle);
+        wirelessTask, "wifi", STACKSIZE, (void *)127, 1, &ScanWHandle);
 
     tusb_init();
 
