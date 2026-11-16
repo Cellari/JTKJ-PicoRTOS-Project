@@ -17,6 +17,11 @@
 #define AP_PSWD NULL
 #define AP_AUTH_TYPE CYW43_AUTH_OPEN
 
+#define MQTT_IP "server.server.com"
+#define MQTT_PORT 8000
+#define MQTT_USERNAME "user"
+#define MQTT_PASSWORD "supersecretpassword"
+
 #include <tusb.h>
 #include "usbSerialDebug/helper.h"
 
@@ -71,7 +76,7 @@ TaskHandle_t HandleLcdTaskHandle = NULL;
 TaskHandle_t SendTaskHandle = NULL;
 TaskHandle_t UsbTaskHandle = NULL;
 TaskHandle_t ListenImuTaskHandle = NULL;
-TaskHandle_t ScanWHandle = NULL;
+TaskHandle_t WirelessHandle = NULL;
 
 // initializes semaphores
 SemaphoreHandle_t serialSemaphore = NULL;
@@ -370,7 +375,7 @@ void HandleLcdTask(void *pvParameters)
     }
 }
 /**
- * @brief Transmits generated Morse symbols through USB CDC.
+ * @brief Transmits generated Morse symbols through USB CDC and MQTT.
  *
  * This task consumes characters from morseTxQueue and sends them to the
  * connected computer through the USB communication interface.
@@ -469,8 +474,13 @@ void SendTask(void *pvParameters)
                 morse_buf[ind] = queue_char;
                 ind += 1;
 
+                // USB
                 tud_cdc_n_write(CDC_ITF_DATA, &queue_char, 1);
                 tud_cdc_n_write_flush(CDC_ITF_DATA);
+
+                // MQTT
+                // if(server_connected))
+                //     wireless_send_message(_msg, strlen(_msg)}
 
                 // logging
                 char log_buf[LOG_BUFFER_SIZE];
@@ -554,28 +564,7 @@ static void listenMovementTask(void *pvParameters)
     }
 }
 
-/// @brief Callback function for handling scan results
-/// @param env Unused
-/// @param result Unused
-/// @return 0
-static int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
-    // Based on github.com/raspberrypi/pico-examples picow_wifi_scan.c:scan_result function
-    if (result && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) < CYW43_LINK_JOIN) {
-        char _msg[30];
-        sprintf(_msg, "ssid: %-32s rssi: %4d chan: %3d mac: %02x:%02x:%02x:%02x:%02x:%02x sec: %u\n",
-            result->ssid, result->rssi, result->channel,
-            result->bssid[0], result->bssid[1], result->bssid[2], result->bssid[3], result->bssid[4], result->bssid[5],
-            result->auth_mode);
-        usb_serial_print(_msg);
-
-        if(strcmp(result->ssid, AP_SSID) == 0) {
-            cyw43_arch_wifi_connect_async(AP_SSID, AP_PSWD, AP_AUTH_TYPE);
-        }
-    }
-    return 0;
-}
-
-/// @brief Initialises and constantly scans for networks when not connected into one
+/// @brief Initialises wifi and mqtt connection, and makes communications
 /// @param pvParameters Unused
 static void wirelessTask(void *pvParameters) {
     (void)pvParameters;
@@ -583,21 +572,22 @@ static void wirelessTask(void *pvParameters) {
     // Initialize wifi
     if (cyw43_arch_init()) {
         usb_serial_print("failed to initialise\n");
-    } else {
-        cyw43_arch_enable_sta_mode();
-        cyw43_arch_poll();
+        return;
     }
-    
+     
+    cyw43_arch_enable_sta_mode();
+    cyw43_arch_poll();
+
     char _msg[30];
-    while(true) {
-        // Based on github.com/raspberrypi/pico-examples picow_wifi_scan.c:scan_worker_fn function feature
-        if (!cyw43_wifi_scan_active(&cyw43_state) && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) < CYW43_LINK_JOIN) {
-            cyw43_wifi_scan_options_t scan_options = {0};
-            int err = cyw43_wifi_scan(&cyw43_state, &scan_options, NULL, scan_result);
-            if (err != 0) {
-                sprintf(_msg, "Failed to start scan: %d\n", err);
-                usb_serial_print(_msg);
-            }
+    int w_code = cyw43_arch_wifi_connect_async(AP_SSID, AP_PSWD, AP_AUTH_TYPE);
+    bool server_connected = false;
+    while(w_code == 0) {
+        if (cyw43_wifi_scan_active(&cyw43_state) 
+        || cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) < CYW43_LINK_JOIN) {
+            server_connected = false;
+        } else if(server_connected == false) {
+            // int result = wireless_init(MQTT_IP, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD);
+            // if(result == 0) server_connected = true;
         }
         
         vTaskDelay(pdMS_TO_TICKS(SCAN_DELAY));
@@ -661,7 +651,7 @@ int main()
         listenMovementTask, "imu", STACKSIZE, (void *)127, 1, &ListenImuTaskHandle);
 
     BaseType_t result_wifi = xTaskCreate(
-        wirelessTask, "wifi", STACKSIZE, (void *)127, 1, &ScanWHandle);
+        wirelessTask, "wifi", STACKSIZE, (void *)127, 1, &WirelessHandle);
 
     tusb_init();
 
