@@ -9,6 +9,9 @@ target_include_directories( hat_fsm PRIVATE
 
 target_link_libraries(hat_fsm PRIVATE
   pico_stdlib
+  hardware_uart
+  hardware_irq
+  hardware_gpio
   FreeRTOS-Kernel
   FreeRTOS-Kernel-Heap4
   usb_serial_debug

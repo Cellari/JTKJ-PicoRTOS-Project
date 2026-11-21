@@ -18,6 +18,11 @@
 #include "morse_utils.h"
 #include "utils.h"
 
+#include "hardware/uart.h"
+#include "hardware/irq.h"
+#include "hardware/gpio.h"
+#include <tkjhat/pins.h>
+
 // BUFFERS
 #define LOG_BUFFER_SIZE 128
 #define RX_TX_BUFFER_SIZE 256
@@ -40,6 +45,13 @@
 #define CHAR_OLED_WIDTH 6
 #define CHAR_OLED_HEIGHT 7
 
+//UART
+#define UART_ID       uart0
+#define UART_BAUDRATE 9600
+#define UART_TX_PIN   DEFAULT_UART_0
+#define UART_RX_PIN   DEFAULT_UART_1
+#define UART_QUEUE_LENGTH 128
+
 // RTOS
 #define STACKSIZE 1024
 
@@ -52,7 +64,7 @@ typedef enum
     SEND
 } programState;
 // variable holding program state
-programState currentState;
+volatile programState currentState;
 
 // initializes task handles
 TaskHandle_t ReadSerialTaskHandle = NULL;
@@ -67,6 +79,14 @@ SemaphoreHandle_t btnSemaphore = NULL;
 
 QueueHandle_t morseRxQueue = NULL;
 QueueHandle_t morseTxQueue = NULL;
+QueueHandle_t uartTxQueue;
+QueueHandle_t uartRxQueue;
+
+// UART function prototypes
+void init_morse_uart(void);
+void uartFxn(void);
+void rx_uart_task(void *pvParameters);
+void tx_uart_task(void *pvParameters);
 
 /**
  * @brief Helper function used for logging.
@@ -106,6 +126,7 @@ void usbTask(void *arg)
     while (true)
     {
         tud_task();
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -126,10 +147,7 @@ void tud_cdc_rx_cb(uint8_t itf)
     // incoming data is ignored while the device is on SEND mode
     if (itf == CDC_ITF_DATA && currentState != SEND)
     {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        // gives serialSemaphore required by ReadSerialTask
-        xSemaphoreGiveFromISR(serialSemaphore, &xHigherPriorityTaskWoken);
-        // no portYIELD_FROM_ISR() since all tasks have equal priority, no preemption needed
+        xSemaphoreGive(serialSemaphore); 
     }
 }
 
@@ -175,7 +193,9 @@ void btnFxn(uint gpio, uint32_t events)
     {
         char c = ' ';
         xQueueSendFromISR(morseTxQueue, &c, &xHigherPriorityTaskWoken);
+        xQueueSendFromISR(uartTxQueue, &c, &xHigherPriorityTaskWoken);
     }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 /**
@@ -495,6 +515,138 @@ void SendTask(void *pvParameters)
         }
     }
 }
+/**
+ * @brief Initializes UART0 for communication between the two Pico devices.
+ *
+ * Configures UART0 with a baud rate of 9600, 8 data bits, no parity
+ * and 1 stop bit (8N1).
+ *
+ * GPIO0 is configured as TX and GPIO1 as RX.
+ * FIFO is enabled to improve reception reliability.
+ *
+ * The UART RX interrupt is initially disabled and is enabled later
+ * by the UART receive task.
+ */
+
+void init_morse_uart(void)
+{
+    uart_init(UART_ID, UART_BAUDRATE);
+
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+
+    uart_set_fifo_enabled(UART_ID, true);
+
+    // Keep RX interrupts disabled until the RX task is ready
+    uart_set_irq_enables(UART_ID, false, false);
+
+    irq_set_exclusive_handler(UART0_IRQ, uartFxn);
+    irq_set_enabled(UART0_IRQ, true);
+}
+/**
+ * @brief UART receive interrupt handler.
+ *
+ * Triggered when UART data is available.
+ *
+ * Reads all available characters from the UART hardware FIFO and
+ * places them in uartRxQueue using the FreeRTOS ISR-safe queue function.
+ *
+ * The UART receive task processes the queued characters outside
+ * interrupt context.
+ */
+void uartFxn(void)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    while (uart_is_readable(UART_ID))
+    {
+        char received_char = uart_getc(UART_ID);
+
+        // Store the received character for the UART RX task
+        xQueueSendFromISR(uartRxQueue, &received_char, &xHigherPriorityTaskWoken);
+    }
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+/**
+ * @brief Processes characters received through UART.
+ *
+ * Enables UART receive interrupts and waits for characters in uartRxQueue.
+ *
+ * Each received character is forwarded to morseRxQueue, allowing the
+ * existing HandleLcdTask to process and display Morse messages.
+ */
+void rx_uart_task(void *pvParameters)
+{
+    char received_char;
+
+    // Enable UART receive interrupts
+    uart_set_irq_enables(UART_ID, true, false);
+
+    while (1)
+    {
+        if (xQueueReceive(
+                uartRxQueue,
+                &received_char,
+                portMAX_DELAY) == pdTRUE)
+        {
+            xQueueSend(
+                morseRxQueue,
+                &received_char,
+                portMAX_DELAY
+            );
+        }
+    }
+}
+
+/**
+ * @brief Transmits Morse characters through UART.
+ *
+ * Waits for outgoing characters in uartTxQueue and sends them
+ * through UART0.
+ *
+ * Three consecutive spaces are interpreted as the end of a message
+ * and are replaced by a newline character ('\n').
+ *
+ * The newline indicates the end of the Morse message to the receiving Pico.
+ */
+
+void tx_uart_task(void *pvParameters)
+{
+    char tx_char;
+    int consecutive_spaces = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(
+                uartTxQueue,
+                &tx_char,
+                portMAX_DELAY) == pdTRUE)
+        {
+            if (tx_char == ' ')
+            {
+                consecutive_spaces++;
+
+                if (consecutive_spaces == 3)
+                {
+                    uart_putc_raw(UART_ID, '\n');
+                    consecutive_spaces = 0;
+                }
+                else
+                {
+                    uart_putc_raw(UART_ID, tx_char);
+                }
+            }
+            else
+            {
+                consecutive_spaces = 0;
+                uart_putc_raw(UART_ID, tx_char);
+            }
+        }
+    }
+}
 
 /// @brief Listens to the IMU-sensor values to add morse code to the queue via device movement
 /// @param pvParameters Unused
@@ -536,6 +688,7 @@ static void listenMovementTask(void *pvParameters)
                     {
                         // Send character to the queue
                         xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+                        xQueueSend(uartTxQueue, &c, portMAX_DELAY);
 
                         // Print the accepted action values
                         sprintf(buf, "[listenMovementTask] Generated: %c; Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f\n\n", c, ax, ay, az, gx, gy, gz);
@@ -576,7 +729,6 @@ int main()
 
     // Set the control button
     init_sw1();
-    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btnFxn);
 
     // Initialize Buzzer
     init_buzzer();
@@ -604,6 +756,18 @@ int main()
     // create queue
     morseRxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
     morseTxQueue = xQueueCreate(TX_QUEUE_LENGTH, sizeof(char));
+    uartTxQueue = xQueueCreate(UART_QUEUE_LENGTH, sizeof(char));
+    uartRxQueue = xQueueCreate(UART_QUEUE_LENGTH, sizeof(char));
+
+    init_morse_uart();
+
+    // Enable button interrupt only after queues and semaphores exist
+    gpio_set_irq_enabled_with_callback(
+    SW1_PIN,
+    GPIO_IRQ_EDGE_FALL,
+    true,
+    btnFxn
+);
 
     BaseType_t result_read_serial = xTaskCreate(
         ReadSerialTask, "READ_SERIAL", STACKSIZE, (void *)127, 1, &ReadSerialTaskHandle);
@@ -619,6 +783,12 @@ int main()
 
     BaseType_t result_imu = xTaskCreate(
         listenMovementTask, "imu", STACKSIZE, (void *)127, 1, &ListenImuTaskHandle);
+    
+    BaseType_t result_uart_rx = xTaskCreate(
+        rx_uart_task, "UART_RX", STACKSIZE, (void *)127, 1, NULL);
+    
+    BaseType_t result_uart_tx = xTaskCreate(
+        tx_uart_task, "UART_TX", STACKSIZE, (void *)127, 1, NULL);
 
     tusb_init();
 
