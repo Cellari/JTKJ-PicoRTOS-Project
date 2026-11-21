@@ -151,7 +151,7 @@ static void print_task(void *arg)
 // Exercise 4: Uncomment the following line to activate the TinyUSB library.
 // Tehtävä 4:  Poista seuraavan rivin kommentointi aktivoidaksesi TinyUSB-kirjaston.
 
-static void usbTask(void *arg)
+static void usb_task(void *arg)
 {
     (void)arg;
     while (1)
@@ -200,7 +200,7 @@ int main()
     // Tehtävä 4: Poista tämän xTaskCreate-rivin kommentointi luodaksesi tehtävän,
     // joka mahdollistaa kaksikanavaisen USB-viestinnän.
 
-    xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
+    xTaskCreate(usb_task, "usb", 2048, NULL, 3, &hUSB);
 #if (configNUMBER_OF_CORES > 1)
     vTaskCoreAffinitySet(hUSB, 1u << 0);
 #endif

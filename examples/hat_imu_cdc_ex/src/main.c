@@ -58,7 +58,7 @@ void imu_task(void *pvParameters)
 }
 
 // ---- Task running USB stack ----
-static void usbTask(void *arg)
+static void usb_task(void *arg)
 {
     (void)arg;
     while (1)
@@ -79,7 +79,7 @@ int main()
     TaskHandle_t hIMUTask, hUsb = NULL;
 
     xTaskCreate(imu_task, "IMUTask", 1024, NULL, 2, &hIMUTask);
-    xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
+    xTaskCreate(usb_task, "usb", 1024, NULL, 3, &hUsb);
 #if (configNUMBER_OF_CORES > 1)
     vTaskCoreAffinitySet(hUsb, 1u << 0);
 #endif

@@ -26,9 +26,12 @@
 #define CDC_ITF_DATA 1
 #define CDC_ITF_DEBUG 0
 
-// IMU
+// QUEUES
+#define EVENT_QUEUE_LENGTH 32
 #define RX_QUEUE_LENGTH 128
 #define TX_QUEUE_LENGTH 128
+
+// IMU
 #define USER_INPUT_DELAY 200
 #define SENSOR_DELAY 40
 #define MOTION_EDGE 80
@@ -40,7 +43,7 @@
 #define CHAR_OLED_WIDTH 6
 #define CHAR_OLED_HEIGHT 7
 
-// RTOS
+// TASKS
 #define STACKSIZE 1024
 
 typedef enum
@@ -59,14 +62,14 @@ typedef enum
 
 typedef enum
 {
-    CONNECTED = 0,
-    DISCONNECTED
+    UART_CONNECTED = 0,
+    UART_DISCONNECTED
 } uartState;
 
 typedef enum
 {
-    CONNECTED = 0,
-    DISCONNECTED
+    USB_CONNECTED = 0,
+    USB_DISCONNECTED
 } usbState;
 
 typedef struct
@@ -82,28 +85,29 @@ typedef struct
 
 typedef enum
 {
-    BTN1_PRESSED = 0,
-    BTN2_PRESSED,
-    USB_CONNECTED,
-    USB_DISCONNECTED,
-    UART_CONNECTED,
-    UART_DISCONNECTED
+    EVT_BTN1_PRESSED = 0,
+    EVT_BTN2_PRESSED,
+    EVT_USB_CONNECTED,
+    EVT_USB_DISCONNECTED,
+    EVT_UART_CONNECTED,
+    EVT_UART_DISCONNECTED,
+    EVT_IMU_INPUT
 } eventType;
 
 typedef struct
 {
     eventType event_type;
-    char *msg;
+    char msg;
 } programEvent;
 
 programState program_state;
 
 // initializes task handles
-TaskHandle_t ReadSerialTaskHandle = NULL;
-TaskHandle_t HandleLcdTaskHandle = NULL;
-TaskHandle_t SendTaskHandle = NULL;
-TaskHandle_t UsbTaskHandle = NULL;
+TaskHandle_t RxUsbTaskHandle = NULL;
+TaskHandle_t TxUsbTaskHandle = NULL;
+TaskHandle_t DisplayTaskHandle = NULL;
 TaskHandle_t ListenImuTaskHandle = NULL;
+TaskHandle_t UsbTaskHandle = NULL;
 TaskHandle_t ControllerTaskHandle = NULL;
 
 // initializes semaphores
@@ -111,13 +115,48 @@ SemaphoreHandle_t usbReadSemaphore = NULL;
 SemaphoreHandle_t uartReadSemaphore = NULL;
 SemaphoreHandle_t imuSemaphore = NULL;
 
+QueueHandle_t eventQueue = NULL;
 QueueHandle_t uartRxQueue = NULL;
 QueueHandle_t uartTxQueue = NULL;
-
 QueueHandle_t usbRxQueue = NULL;
 QueueHandle_t usbTxQueue = NULL;
 
-QueueHandle_t eventQueue = NULL;
+// helper function for logging
+char *event_type_to_str(eventType e)
+{
+    switch (e)
+    {
+    case EVT_BTN1_PRESSED:
+        return "EVT_BTN1_PRESSED";
+    case EVT_BTN2_PRESSED:
+        return "EVT_BTN2_PRESSED";
+    case EVT_USB_CONNECTED:
+        return "EVT_USB_CONNECTED";
+    case EVT_USB_DISCONNECTED:
+        return "EVT_USB_DISCONNECTED";
+    case EVT_UART_CONNECTED:
+        return "EVT_UART_CONNECTED";
+    case EVT_UART_DISCONNECTED:
+        return "EVT_UART_DISCONNECTED";
+    case IMU_INPUT:
+        return "IMU_INPUT";
+    default:
+        return "UNDEFINED";
+    }
+}
+
+char *core_state_to_str(coreState s)
+{
+    switch (s)
+    {
+    case IDLE:
+        return "IDLE";
+    case SEND:
+        return "SEND";
+    default:
+        return "UNDEFINED";
+    }
+}
 
 void controller_task(void *pvParameters)
 {
@@ -127,7 +166,16 @@ void controller_task(void *pvParameters)
     {
         if (xQueueReceive(eventQueue, &cur_event, portMAX_DELAY))
         {
-            if (cur_event.event_type == BTN1_PRESSED)
+
+            // logging
+            char log_buf[LOG_BUFFER_SIZE];
+            snprintf(log_buf, sizeof(log_buf), "[controller_task] State = %s; Event received: %s\n\n",
+                     core_state_to_str(program_state.core_state), event_type_to_str(cur_event.event_type));
+            usb_serial_print(log_buf);
+            usb_serial_flush();
+            // logging
+
+            if (cur_event.event_type == EVT_BTN1_PRESSED)
             {
                 // btn1 + IDLE -> switch to SEND mode (IMU enabled)
                 if (program_state.core_state == IDLE)
@@ -156,16 +204,21 @@ void controller_task(void *pvParameters)
                     }
 
                     // send character to Tx queues
-                    if (program_state.uart_state == CONNECTED)
+                    if (program_state.uart_state == UART_CONNECTED)
                         xQueueSend(uartTxQueue, &to_send, portMAX_DELAY);
 
-                    if (program_state.usb_state == CONNECTED)
+                    if (program_state.usb_state == USB_CONNECTED)
                         xQueueSend(usbTxQueue, &to_send, portMAX_DELAY);
                 }
             }
-            else if (cur_event.event_type == BTN2_PRESSED)
+            else if (cur_event.event_type == EVT_BTN2_PRESSED)
             {
                 program_state.display_state = (program_state.display_state + 1) % NUM_OLED_STATES;
+            }
+            else if (cur_event.event_type == EVT_IMU_INPUT)
+            {
+                // resets conseq spaces counter on IMU input;
+                program_state.conseq_spaces_count = 0;
             }
         }
     }
@@ -181,7 +234,7 @@ void controller_task(void *pvParameters)
  * communication events to be handled while other operations are running.
  */
 
-void usbTask(void *arg)
+void usb_task(void *arg)
 {
     (void)arg;
     while (true)
@@ -203,28 +256,12 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
 }
 
-// UART interrupt
-void on_uart_rx(void)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xSemaphoreGiveFromISR(uartReadSemaphore, &xHigherPriorityTaskWoken);
-}
-
-void btn1Fxn(uint gpio, uint32_t events)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    programEvent event = {BTN1_PRESSED, "BTN1 PRESSED"};
-    xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-
-void btn2Fxn(uint gpio, uint32_t events)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    programEvent event = {BTN2_PRESSED, "BTN2 PRESSED"};
-    xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
+// // UART interrupt
+// void on_uart_rx(void)
+// {
+//     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//     xSemaphoreGiveFromISR(uartReadSemaphore, &xHigherPriorityTaskWoken);
+// }
 
 /// @brief Use buzzer to indicate a succesful morse signal
 /// @param ch Accepts either '.', '-', ' ' or '\n'
@@ -249,19 +286,21 @@ void char_to_buzz(char ch)
     }
 }
 
-void btn1Fxn(uint gpio, uint32_t events)
+void btnFxn(uint gpio, uint32_t events)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    programEvent event = {BTN1_PRESSED, "BTN1 PRESSED"};
-    xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
 
-void btn2Fxn(uint gpio, uint32_t events)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    programEvent event = {BTN2_PRESSED, "BTN2 PRESSED"};
-    xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
+    if (gpio == SW1_PIN)
+    {
+        programEvent event = {EVT_BTN1_PRESSED, "BTN1 PRESSED"};
+        xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
+    }
+    else if (gpio == SW2_PIN)
+    {
+        programEvent event = {EVT_BTN2_PRESSED, "BTN2 PRESSED"};
+        xQueueSendFromISR(eventQueue, &event, &xHigherPriorityTaskWoken);
+    }
+
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
@@ -274,11 +313,13 @@ void rx_usb_task(void *pvParameters)
         // Task is blocked indefinitely until usbReadSemaphore is given
         if (xSemaphoreTake(usbReadSemaphore, portMAX_DELAY) == pdTRUE)
         {
+
             // state switched to RECEIVE while reading serial data
 
             // logging
             char log_buf[LOG_BUFFER_SIZE];
-            snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %d; Task activated, reading usb buffer...\n\n", program_state.core_state);
+            snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %d; Task activated, reading usb buffer...\n\n",
+                     core_state_to_str(program_state.core_state));
             usb_serial_print(log_buf);
             usb_serial_flush();
             // logging
@@ -295,7 +336,8 @@ void rx_usb_task(void *pvParameters)
             }
 
             // logging
-            snprintf(log_buf, sizeof(log_buf), "[ReadSerialTask] State = %d; Usb buffer drained\n\n", program_state.core_state);
+            snprintf(log_buf, sizeof(log_buf), "[ReadSerialTask] State = %d; Usb buffer drained\n\n",
+                     core_state_to_str(program_state.core_state));
             usb_serial_print(log_buf);
             usb_serial_flush();
             // logging
@@ -303,15 +345,15 @@ void rx_usb_task(void *pvParameters)
     }
 }
 
-void rx_uart_task(void *pvParameters)
-{
-    // takes uartReadSemaphore and drains uart buffer
-}
+// void rx_uart_task(void *pvParameters)
+// {
+//     // takes uartReadSemaphore and drains uart buffer
+// }
 
-void tx_uart_task(void *pvParameters)
-{
-    // sends characters over UART from uartTxQueue
-}
+// void tx_uart_task(void *pvParameters)
+// {
+//     // sends characters over UART from uartTxQueue
+// }
 
 /**
  * @brief Displays a null-terminated string while managing OLED screen limits.
@@ -393,7 +435,7 @@ bool drain_queue_to_buffer(QueueHandle_t queue, char *buffer, uint16_t *cur_buff
             continue;
 
         // overflow guard
-        if(*cur_buffer_ind < RX_TX_BUFFER_SIZE - 1)
+        if (*cur_buffer_ind < RX_TX_BUFFER_SIZE - 1)
         {
             // puts a character from queue to buffer
             buffer[*cur_buffer_ind] = c;
@@ -403,6 +445,11 @@ bool drain_queue_to_buffer(QueueHandle_t queue, char *buffer, uint16_t *cur_buff
     }
 
     return new_data;
+}
+
+void reset_buffer(char *buffer)
+{
+    memeset(buffer, 0, RX_TX_BUFFER_SIZE)
 }
 
 void display_task(void *pvParameters)
@@ -466,35 +513,16 @@ void display_task(void *pvParameters)
     }
 }
 
-/**
- * @brief Transmits generated Morse symbols through USB CDC.
- *
- * This task consumes characters from morseTxQueue and sends them to the
- * connected computer through the USB communication interface.
- *
- * The task waits for USB to be mounted before beginning normal operation.
- * During transmission, it checks that the CDC interface is connected before
- * sending each character.
- *
- * Three consecutive spaces are interpreted as the end of a message.
- * They are replaced with a newline character, which acts as the message
- * terminator on the receiving side.
- *
- * Each transmitted symbol is also sent to the buzzer for audio feedback.
- */
-void SendTask(void *pvParameters)
+void tx_usb_task(void *pvParameters)
 {
     char queue_char;
-    uint8_t conseq_spaces = 0;
-
-    char morse_buf[RX_TX_BUFFER_SIZE];
-    uint16_t ind = 0;
 
     while (!tud_mounted())
     {
         // logging
         char log_buf[LOG_BUFFER_SIZE];
-        snprintf(log_buf, sizeof(log_buf), "[SendTask] State = %d; tud not mounted\n\n", currentState);
+        snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %d; tud not mounted\n\n",
+                 program_state.core_state);
         usb_serial_print(log_buf);
         usb_serial_flush();
         // logging
@@ -504,88 +532,41 @@ void SendTask(void *pvParameters)
 
     while (true)
     {
-        if (xQueueReceive(morseTxQueue, &queue_char, portMAX_DELAY) == pdTRUE)
+        if (xQueueReceive(usbTxQueue, &queue_char, portMAX_DELAY) == pdTRUE)
         {
-            if (currentState == SEND)
+            // usb connection guard
+            while (!tud_cdc_n_connected(CDC_ITF_DATA))
             {
-                while (!tud_cdc_n_connected(CDC_ITF_DATA))
-                {
-                    // logging
-                    char log_buf[LOG_BUFFER_SIZE];
-                    snprintf(log_buf, sizeof(log_buf), "[SendTask] State = %d; tud cdc 1 not connected\n\n", currentState);
-                    usb_serial_print(log_buf);
-                    usb_serial_flush();
-                    // logging
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                }
-
-                // checks if 3 space were received consequtively (EOM condition)
-                if (queue_char == ' ')
-                {
-                    if (conseq_spaces == 2)
-                    {
-                        queue_char = '\n';
-                        conseq_spaces = 0;
-                        currentState = IDLE;
-
-                        morse_buf[ind] = '\0';
-
-                        // logging
-                        char log_buf[LOG_BUFFER_SIZE];
-                        // log last character
-                        snprintf(log_buf, sizeof(log_buf),
-                                 "[SendTask] State = %d; Symbol sent: \"\\n\"\n\n", currentState, queue_char);
-                        usb_serial_print(log_buf);
-                        usb_serial_flush();
-                        // log the entire message
-                        snprintf(log_buf, sizeof(log_buf), "[SendTask] State = %d; EOM generated; Morse generated: \"%s\\n\"\n\n", currentState, morse_buf);
-                        usb_serial_print(log_buf);
-                        usb_serial_flush();
-                        // logging
-
-                        // send \n over serial
-                        tud_cdc_n_write(CDC_ITF_DATA, &queue_char, 1);
-                        tud_cdc_n_write_flush(CDC_ITF_DATA);
-
-                        char_to_buzz('\n');
-
-                        // reset buffer (every value is 0)
-                        memset(morse_buf, 0, sizeof(morse_buf));
-                        // reset buffer index
-                        ind = 0;
-
-                        // skip the rest of the loop code
-                        continue;
-                    }
-                    else
-                        conseq_spaces += 1;
-                }
-                else
-                    conseq_spaces = 0;
-
-                morse_buf[ind] = queue_char;
-                ind += 1;
-
-                tud_cdc_n_write(CDC_ITF_DATA, &queue_char, 1);
-                tud_cdc_n_write_flush(CDC_ITF_DATA);
-
                 // logging
                 char log_buf[LOG_BUFFER_SIZE];
-                snprintf(log_buf, sizeof(log_buf),
-                         "[SendTask] State = %d; Symbol sent: \"%c\"\n\n", currentState, queue_char);
+                snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %d; tud cdc 1 not connected\n\n",
+                         program_state.core_state);
                 usb_serial_print(log_buf);
                 usb_serial_flush();
                 // logging
-
-                char_to_buzz(queue_char);
+                vTaskDelay(pdMS_TO_TICKS(50));
             }
+
+            tud_cdc_n_write(CDC_ITF_DATA, &queue_char, 1);
+            tud_cdc_n_write_flush(CDC_ITF_DATA);
+
+            // logging
+            char log_buf[LOG_BUFFER_SIZE];
+            snprintf(log_buf, sizeof(log_buf),
+                     "[SendTask] State = %d; Symbol sent: \"%c\"\n\n",
+                     program_state.core_state, queue_char);
+            usb_serial_print(log_buf);
+            usb_serial_flush();
+            // logging
+
+            char_to_buzz(queue_char);
         }
     }
 }
 
 /// @brief Listens to the IMU-sensor values to add morse code to the queue via device movement
 /// @param pvParameters Unused
-static void listenMovementTask(void *pvParameters)
+static void imu_task(void *pvParameters)
 {
     (void)pvParameters;
 
@@ -596,13 +577,10 @@ static void listenMovementTask(void *pvParameters)
     char prev_c;
     while (true)
     {
-        if (xSemaphoreTake(btnSemaphore, portMAX_DELAY) == pdTRUE)
+        if (xSemaphoreTake(imuSemaphore, portMAX_DELAY) == pdTRUE)
         {
-            clear_display();
-            write_text("MODE: SEND");
-
             prev_c = 0;
-            while (currentState == SEND)
+            while (program_state.core_state == SEND)
             {
                 char c = 0; // Local variable for each loop, sent to queue via address
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
@@ -621,11 +599,14 @@ static void listenMovementTask(void *pvParameters)
                     // Detect the input is a new user action
                     if (c != 0 && prev_c != c)
                     {
-                        // Send character to the queue
-                        xQueueSend(morseTxQueue, &c, portMAX_DELAY);
+                        // Send character to the queues
+                        if (program_state.usb_state == USB_CONNECTED)
+                            xQueueSend(usbTxQueue, &c, portMAX_DELAY);
+                        if (program_state.uart_state == UART_CONNECTED)
+                            xQueueSend(uartTxQueue, &c, portMAX_DELAY);
 
                         // Print the accepted action values
-                        sprintf(buf, "[listenMovementTask] Generated: %c; Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f\n\n", c, ax, ay, az, gx, gy, gz);
+                        sprintf(buf, "[imu_task] Generated: %c; Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f\n\n", c, ax, ay, az, gx, gy, gz);
                         usb_serial_print(buf);
                         usb_serial_flush();
                     }
@@ -644,9 +625,6 @@ static void listenMovementTask(void *pvParameters)
                 else
                     vTaskDelay(pdMS_TO_TICKS(USER_INPUT_DELAY));
             }
-
-            clear_display();
-            write_text("IDLE");
         }
     }
 }
@@ -659,12 +637,11 @@ int main()
     init_hat_sdk();
     init_display();
     clear_display();
-    write_text("IDLE");
+    write_text("HI!");
 
-    // Set the control button
+    // Set the buttons
     init_sw1();
-    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btn1Fxn);
-    gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_FALL, true, btn2Fxn);
+    init_sw2();
 
     // Initialize Buzzer
     init_buzzer();
@@ -683,33 +660,46 @@ int main()
         usb_serial_print("Failed to initialize ICM-42670P.\n");
     }
 
-    currentState = IDLE;
+    // program_state initial config
+    program_state.core_state = IDLE;
+    program_state.display_state = SHOW_USB_MORSE;
+    // for testing!!!
+    program_state.uart_state = UART_DISCONNECTED;
+    program_state.usb_state = USB_CONNECTED;
 
     // creates binary semaphores
-    serialSemaphore = xSemaphoreCreateBinary();
-    btnSemaphore = xSemaphoreCreateBinary();
+    usbReadSemaphore = xSemaphoreCreateBinary();
+    uartReadSemaphore = xSemaphoreCreateBinary();
+    imuSemaphore = xSemaphoreCreateBinary();
 
-    // create queue
-    morseRxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
-    morseTxQueue = xQueueCreate(TX_QUEUE_LENGTH, sizeof(char));
+    // create queues
+    eventQueue = xQueueCreate(EVENT_QUEUE_LENGTH, sizeof(programEvent));
+    usbRxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
+    usbTxQueue = xQueueCreate(TX_QUEUE_LENGTH, sizeof(char));
+    uartRxQueue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(char));
+    uartTxQueue = xQueueCreate(TX_QUEUE_LENGTH, sizeof(char));
 
-    BaseType_t result_read_serial = xTaskCreate(
-        ReadSerialTask, "READ_SERIAL", STACKSIZE, (void *)127, 1, &ReadSerialTaskHandle);
+    BaseType_t result_rx_usb = xTaskCreate(
+        rx_usb_task, "RX_USB", STACKSIZE, NULL, 1, &RxUsbTaskHandle);
+
+    BaseType_t result_tx_usb = xTaskCreate(
+        tx_usb_task, "TX_USB", STACKSIZE, NULL, 1, &TxUsbTaskHandle);
 
     BaseType_t result_handle_lcd = xTaskCreate(
-        display_task, "UPDATE_LCD", STACKSIZE, (void *)127, 1, &HandleLcdTaskHandle);
-
-    BaseType_t result_send = xTaskCreate(
-        SendTask, "SEND", STACKSIZE, (void *)127, 1, &SendTaskHandle);
+        display_task, "DISPLAY", STACKSIZE, NULL, 1, &DisplayTaskHandle);
 
     BaseType_t result_usb = xTaskCreate(
-        usbTask, "TinyUSB", STACKSIZE, (void *)127, 2, &UsbTaskHandle);
+        usb_task, "TinyUSB", STACKSIZE, NULL, 2, &UsbTaskHandle);
 
     BaseType_t result_imu = xTaskCreate(
-        listenMovementTask, "imu", STACKSIZE, (void *)127, 1, &ListenImuTaskHandle);
+        imu_task, "IMU", STACKSIZE, NULL, 1, &ListenImuTaskHandle);
 
     BaseType_t result_controller = xTaskCreate(
         controller_task, "controller", STACKSIZE, NULL, 2, &ControllerTaskHandle);
+
+    // Set buttons interrupt callback
+    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btnFxn);
+    gpio_set_irq_enabled(SW2_PIN, GPIO_IRQ_EDGE_FALL, true);
 
     tusb_init();
 
