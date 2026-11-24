@@ -44,6 +44,12 @@
 #define CHAR_OLED_HEIGHT 7    // oled char height (px)
 #define NUM_OLED_STATES 4     // how many states display has
 
+// UART
+#define UART_ID uart0
+#define UART_BAUDRATE 9600
+#define UART_TX_PIN DEFAULT_UART_0
+#define UART_RX_PIN DEFAULT_UART_1
+
 // TASKS
 #define STACKSIZE 1024
 
