@@ -81,7 +81,7 @@ static void sensorTask(void *arg)
 }
 
 // ---- Task running USB stack ----
-static void usbTask(void *arg)
+static void usb_task(void *arg)
 {
     (void)arg;
     while (1)
@@ -98,7 +98,7 @@ int main(void)
 
     // Create tasks
     TaskHandle_t hUsb = NULL;
-    xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
+    xTaskCreate(usb_task, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sensorTask, "app", 1024, NULL, 2, NULL);
 
 #if (configNUMBER_OF_CORES > 1)

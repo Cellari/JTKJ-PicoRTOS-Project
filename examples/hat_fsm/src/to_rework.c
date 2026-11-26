@@ -468,7 +468,7 @@ static void receiveTask(void *arg)
     }
 }
 // ---- Task running USB stack ----
-static void usbTask(void *arg)
+static void usb_task(void *arg)
 {
     (void)arg;
     while (1)
@@ -493,7 +493,7 @@ static inline int inBetween(const float *value, float low, float high)
 
 /// @brief Listens to the IMU-sensor values to add morse code to the queue via device movement
 /// @param pvParameters Unused
-static void listenMovementTask(void *pvParameters)
+static void imu_task(void *pvParameters)
 {
     (void)pvParameters;
 
@@ -507,7 +507,7 @@ static void listenMovementTask(void *pvParameters)
         char c = 0; // Local variable for each loop, sent to queue via address
         if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0)
         {
-            #define MOTION_EDGE 80 // Used for ease of modification
+#define MOTION_EDGE 80 // Used for ease of modification
             if (inBetween(&gx, -MOTION_EDGE, MOTION_EDGE) && !inBetween(&gy, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75) && !inBetween(&gz, -MOTION_EDGE * 0.75, MOTION_EDGE * 0.75))
             {
                 c = '-';
@@ -657,13 +657,13 @@ int main(void)
     }
     // Create tasks
     TaskHandle_t hUsb = NULL;
-    xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
+    xTaskCreate(usb_task, "usb", 1024, NULL, 3, &hUsb);
     xTaskCreate(sendTask, "send", 1024, NULL, 2, NULL);
 
     xTaskCreate(receiveTask, "receive", 1024, NULL, 2, NULL);
     // xTaskCreate(testMorseTask, "test", 1024, NULL, 1, NULL);
     // xTaskCreate(listenOrientationTask, "imu", 1024, NULL, 1, NULL);
-    xTaskCreate(listenMovementTask, "imu", 1024, NULL, 1, NULL);
+    xTaskCreate(imu_task, "imu", 1024, NULL, 1, NULL);
 
 #if (configNUMBER_OF_CORES > 1)
     vTaskCoreAffinitySet(hUsb, 1u << 0);

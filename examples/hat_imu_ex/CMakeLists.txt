@@ -9,6 +9,13 @@ add_executable(${DEFAULT_TARGET}
 
 target_link_libraries(${DEFAULT_TARGET} PRIVATE
   pico_stdlib
+
+  # added from Pranjal's branch
+  hardware_uart
+  hardware_irq
+  hardware_gpio
+  #
+
   FreeRTOS-Kernel
   FreeRTOS-Kernel-Heap4
   TKJHAT_SDK
