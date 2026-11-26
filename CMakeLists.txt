@@ -115,6 +115,11 @@ add_subdirectory(examples/screen_test)
 # If you add the headers in a different directory, you should use: target_include_directories
 add_executable(${MAIN_TARGET}
     src/main.c
+    src/morse_utils.c
+)
+
+target_include_directories( hat_app PRIVATE
+    include
 )
 
 # Links. Add all libraries that application is using. It must at least use the pico_stdlib
@@ -139,7 +144,7 @@ if (PICO_CYW43_SUPPORTED)
 endif()
 
 #Support for stdio (printf, fwrite, puts...) via usb or UART. 
-pico_enable_stdio_usb(${MAIN_TARGET} 0)
+pico_enable_stdio_usb(${MAIN_TARGET} 1)
 pico_enable_stdio_uart(${MAIN_TARGET} 0)
 
 # Create different output files: 
