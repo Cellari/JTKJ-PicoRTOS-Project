@@ -1,3 +1,34 @@
+/**
+ * @name Computer Systems module 2 project, device/group 430
+ * @author Pranjal Singh, Ari Suoyrjö, Gleb Bassalygo
+ * @brief Pico morse code communicator device utilizing IMU, display, buzzer, usb, uart
+ * @date 2026-11-26
+ * 
+ * 
+ * @author Ari Suoyrjö
+ * 
+ * @details IMU algorithm and imu_task implementation, testing, user interaction (buzzer + button),
+ * code review - prototype 1 & 2
+ * 
+ * 
+ * @author Pranjal Singh
+ * 
+ * @details USB/UART core functionality (read/write + queues), morse translation function(s),                
+ * basic display functionality - prototype 1 & 3 
+ * 
+ * 
+ * @author Gleb Bassalygo
+ * 
+ * @details Program architecture (active object pattern, state machine, inter-task communication - semaphore/queues),
+ * final version of display handling, testing, logging, meeting coordination - prototype 2 & 3
+ * 
+ * 
+ * @details Prototype 1 - Core features of Tier 1, ground work Tier 2
+ * @details Prototype 2 - State machine v1 & inter-task comms & refactoring added to Prototype 1 -> Tier 2 ready 
+ * @details Prototype 3 - Active object pattern & revised inter-task comms & display reworked & UART functionality -> Tier 3
+ */
+
+
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +37,10 @@
 
 #include <pico/stdlib.h>
 #include <pico/stdio.h>
+
+#include "hardware/uart.h"
+#include "hardware/irq.h"
+#include "hardware/gpio.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -117,8 +152,10 @@ programState program_state;
 
 // global var that stores text currently written on display
 char on_display[MAX_OLED_CHAR_NUM + 1];
-// global bool flag var that tells the program if the screen was updated at least once
-// needed because we put "Hi!" message on program initialization ("Hi!" is not stored in on_display buffer)
+
+// global bool flag var that tells the program if the screen was updated since start of the program
+// needed for display_task because we put initial message "Hi!" message on program initialization
+// ("Hi!" is not stored in on_display buffer)
 bool screen_updated = false;
 
 // task handles
@@ -128,6 +165,8 @@ TaskHandle_t DisplayTaskHandle = NULL;
 TaskHandle_t ListenImuTaskHandle = NULL;
 TaskHandle_t UsbTaskHandle = NULL;
 TaskHandle_t ControllerTaskHandle = NULL;
+TaskHandle_t TxUartTaskHandle = NULL;
+TaskHandle_t RxUartTaskHandle = NULL;
 
 // semaphores
 SemaphoreHandle_t usbReadSemaphore = NULL;
@@ -141,8 +180,92 @@ QueueHandle_t uartTxQueue = NULL;
 QueueHandle_t usbRxQueue = NULL;
 QueueHandle_t usbTxQueue = NULL;
 
-// helper function for logging
-// returns name of event type as str
+const char *core_state_to_str(coreState s);
+
+/**
+ * @brief UART receive interrupt handler.
+ *
+ * Triggered when UART data is available.
+ * Gives semaphore taken required by the rx_uart_task
+ */
+void uartFxn(void)
+{
+    // teporarily disable uart interrupt until rx_uart_task drains the uart buffer
+    uart_set_irq_enables(UART_ID, false, false);
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    // gives usbReadSemaphore required by rx_uart_task
+    xSemaphoreGiveFromISR(uartReadSemaphore, &xHigherPriorityTaskWoken);
+}
+
+/**
+ * @brief Initializes UART0 for communication between the two Pico devices.
+ *
+ * Configures UART0 with a baud rate of 9600, 8 data bits, no parity
+ * and 1 stop bit (8N1).
+ *
+ * GPIO0 is configured as TX and GPIO1 as RX.
+ * FIFO is enabled to improve reception reliability.
+ *
+ * The UART RX interrupt is initially disabled and is enabled later
+ * by the UART receive task.
+ */
+void init_morse_uart(void)
+{
+    uart_init(UART_ID, UART_BAUDRATE);
+
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+
+    uart_set_fifo_enabled(UART_ID, true);
+
+    uart_set_irq_enables(UART_ID, true, false);
+
+    irq_set_exclusive_handler(UART0_IRQ, uartFxn);
+    irq_set_enabled(UART0_IRQ, true);
+
+    gpio_pull_up(UART_RX_PIN);
+}
+
+/**
+ * @brief Transmits morse characters through UART.
+ *
+ * Waits for outgoing characters in uartTxQueue and sends them
+ * through UART0
+ */
+void tx_uart_task(void *pvParameters)
+{
+    char tx_char;
+
+    while (true)
+    {
+        if (xQueueReceive(uartTxQueue, &tx_char, portMAX_DELAY) == pdTRUE)
+        {
+            uart_putc_raw(UART_ID, tx_char);
+
+            // logging
+            if (usb_serial_connected())
+            {
+                char log_buf[LOG_BUFFER_SIZE];
+                snprintf(log_buf, sizeof(log_buf), "[tx_uart_task] State = %s; Char sent over uart: %c\n\n",
+                         core_state_to_str(program_state.core_state), tx_char);
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
+            // logging
+        }
+    }
+}
+
+/**
+ * @brief Helper function for logging
+ * 
+ * Returns string name of an event type
+ * 
+ * @param e - event type
+ * @return const char* 
+ */
 const char *event_type_to_str(eventType e)
 {
     switch (e)
@@ -166,8 +289,14 @@ const char *event_type_to_str(eventType e)
     }
 }
 
-// helper function for logging
-// returns display state as str
+/**
+ * @brief Helper function for logging
+ * 
+ * Returns string name of a display state
+ * 
+ * @param s - display state
+ * @return const char* 
+ */
 const char *display_state_to_str(displayState s)
 {
     switch (s)
@@ -185,8 +314,14 @@ const char *display_state_to_str(displayState s)
     }
 }
 
-// helper function for logging
-// returns core state name as str
+/**
+ * @brief Helper function for logging
+ * 
+ * Returns string name of core state
+ * 
+ * @param s 
+ * @return const char* 
+ */
 const char *core_state_to_str(coreState s)
 {
     switch (s)
@@ -225,11 +360,14 @@ void controller_task(void *pvParameters)
         {
 
             // logging
-            char log_buf[LOG_BUFFER_SIZE];
-            snprintf(log_buf, sizeof(log_buf), "[controller_task] State = %s; Event received: %s\n\n",
-                     core_state_to_str(program_state.core_state), event_type_to_str(cur_event.event_type));
-            usb_serial_print(log_buf);
-            usb_serial_flush();
+            if (usb_serial_connected())
+            {
+                char log_buf[LOG_BUFFER_SIZE];
+                snprintf(log_buf, sizeof(log_buf), "[controller_task] State = %s; Event received: %s\n\n",
+                         core_state_to_str(program_state.core_state), event_type_to_str(cur_event.event_type));
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
             // logging
 
             if (cur_event.event_type == EVT_BTN1_PRESSED)
@@ -338,13 +476,6 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
 }
 
-// // UART interrupt
-// void on_uart_rx(void)
-// {
-//     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-//     xSemaphoreGiveFromISR(uartReadSemaphore, &xHigherPriorityTaskWoken);
-// }
-
 /**
  * @brief Transforms char into a buzzer signal. Used for both rx, tx operations
  *
@@ -377,7 +508,7 @@ void char_to_buzz(char ch)
  * Checks from which pin (button) interrupt came from, sends coresponding
  * event to eventQueue
  *
- * Has basic debounce guard
+ * Has basic debounce guard (doesn't work all that well :( )
  *
  * @param gpio - interrupt pin
  * @param events - not used
@@ -440,10 +571,13 @@ void rx_usb_task(void *pvParameters)
         {
             // logging
             char log_buf[LOG_BUFFER_SIZE];
-            snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %s; Task activated, reading usb buffer...\n\n",
-                     core_state_to_str(program_state.core_state));
-            usb_serial_print(log_buf);
-            usb_serial_flush();
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %s; Task activated, reading usb buffer...\n\n",
+                         core_state_to_str(program_state.core_state));
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
             // logging
 
             // drains the usb buffer (cdc 1)
@@ -459,24 +593,73 @@ void rx_usb_task(void *pvParameters)
             }
 
             // logging
-            snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %s; Usb buffer drained\n\n",
-                     core_state_to_str(program_state.core_state));
-            usb_serial_print(log_buf);
-            usb_serial_flush();
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf), "[rx_usb_task] State = %s; Usb buffer drained\n\n",
+                         core_state_to_str(program_state.core_state));
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
             // logging
         }
     }
 }
 
-// void rx_uart_task(void *pvParameters)
-// {
-//     // takes uartReadSemaphore and drains uart buffer
-// }
+void rx_uart_task(void *pvParameters)
+{
+    char c;
 
-// void tx_uart_task(void *pvParameters)
-// {
-//     // sends characters over UART from uartTxQueue
-// }
+    while (true)
+    {
+        if (xSemaphoreTake(uartReadSemaphore, portMAX_DELAY))
+        {
+            // logging
+            char log_buf[LOG_BUFFER_SIZE];
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf), "[rx_uart_task] State = %s; Draining uart buffer...\n\n",
+                         core_state_to_str(program_state.core_state));
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
+            // logging
+
+            uint8_t char_counter = 0;
+            char buf[RX_TX_BUFFER_SIZE];
+
+            // drains uart rx buffer
+            while (uart_is_readable(UART_ID))
+            {
+                c = uart_getc(UART_ID);
+                buf[char_counter] = c;
+                char_counter += 1;
+            }
+
+            buf[char_counter] = '\0';
+
+            // sends drained chars to rx uart queue
+            for (uint8_t i = 0; i < char_counter; i++)
+            {
+                // basic anti-noise guard
+                if (buf[i] == '-' || buf[i] == '.' || buf[i] == ' ' || buf[i] == '\n')
+                    xQueueSend(uartRxQueue, &buf[i], portMAX_DELAY);
+            }
+
+            // enables uart interrupt back
+            uart_set_irq_enables(UART_ID, true, false);
+
+            // logging
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf), "[rx_uart_task] State = %s; Uart buffer drained: %s\n\n",
+                         core_state_to_str(program_state.core_state), buf);
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
+            // logging
+        }
+    }
+}
 
 /**
  * @brief Helper function that drains character from passed queue to passed buffer
@@ -585,8 +768,10 @@ void update_display_txt(char *txt)
         put_char_on_display(i, txt[i]);
     }
 
-    // copies txt contents to on_display
-    strcpy(on_display, txt);
+    // copies txt contents to on_display if it fits on the screen
+    // edge case for messages longer than 147 chars not handled
+    if(txt_len < MAX_OLED_CHAR_NUM)
+        strcpy(on_display, txt);
 
     screen_updated = true;
 }
@@ -649,10 +834,13 @@ void display_task(void *pvParameters)
         {
             // logging
             char log_buf[LOG_BUFFER_SIZE];
-            snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; New display state: %s; New relevant data: %d; Redrawing display;\n\n",
-                     core_state_to_str(program_state.core_state), display_state_to_str(new_display_state), new_relevant_data);
-            usb_serial_print(log_buf);
-            usb_serial_flush();
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; New display state: %s; New relevant data: %d; Redrawing display;\n\n",
+                         core_state_to_str(program_state.core_state), display_state_to_str(new_display_state), new_relevant_data);
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
             // logging
 
             switch (new_display_state)
@@ -660,10 +848,13 @@ void display_task(void *pvParameters)
             case SHOW_USB_MORSE:
 
                 // logging
-                snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; USB morse to draw: %s;\n\n",
-                         core_state_to_str(program_state.core_state), morse_usb_msg);
-                usb_serial_print(log_buf);
-                usb_serial_flush();
+                if (usb_serial_connected())
+                {
+                    snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; USB morse to draw: %s;\n\n",
+                             core_state_to_str(program_state.core_state), morse_usb_msg);
+                    usb_serial_print(log_buf);
+                    usb_serial_flush();
+                }
                 // logging
 
                 update_display_txt(morse_usb_msg);
@@ -671,10 +862,13 @@ void display_task(void *pvParameters)
             case SHOW_UART_MORSE:
 
                 // logging
-                snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; UART morse to draw: %s;\n\n",
-                         core_state_to_str(program_state.core_state), morse_uart_msg);
-                usb_serial_print(log_buf);
-                usb_serial_flush();
+                if (usb_serial_connected())
+                {
+                    snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; UART morse to draw: %s;\n\n",
+                             core_state_to_str(program_state.core_state), morse_uart_msg);
+                    usb_serial_print(log_buf);
+                    usb_serial_flush();
+                }
                 // logging
 
                 update_display_txt(morse_uart_msg);
@@ -683,10 +877,13 @@ void display_task(void *pvParameters)
                 morse_to_text(morse_usb_msg, usb_msg_translation, RX_TX_BUFFER_SIZE);
 
                 // logging
-                snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; USB Translation to draw: %s;\n\n",
-                         core_state_to_str(program_state.core_state), usb_msg_translation);
-                usb_serial_print(log_buf);
-                usb_serial_flush();
+                if (usb_serial_connected())
+                {
+                    snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; USB Translation to draw: %s;\n\n",
+                             core_state_to_str(program_state.core_state), usb_msg_translation);
+                    usb_serial_print(log_buf);
+                    usb_serial_flush();
+                }
                 // logging
 
                 update_display_txt(usb_msg_translation);
@@ -695,11 +892,13 @@ void display_task(void *pvParameters)
                 morse_to_text(morse_uart_msg, uart_msg_translation, RX_TX_BUFFER_SIZE);
 
                 // logging
-                char log_buf[LOG_BUFFER_SIZE];
-                snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; UART Translation to draw: %s;\n\n",
-                         core_state_to_str(program_state.core_state), uart_msg_translation);
-                usb_serial_print(log_buf);
-                usb_serial_flush();
+                if (usb_serial_connected())
+                {
+                    snprintf(log_buf, sizeof(log_buf), "[display_task] State = %s; UART Translation to draw: %s;\n\n",
+                             core_state_to_str(program_state.core_state), uart_msg_translation);
+                    usb_serial_print(log_buf);
+                    usb_serial_flush();
+                }
                 // logging
 
                 update_display_txt(uart_msg_translation);
@@ -729,10 +928,13 @@ void tx_usb_task(void *pvParameters)
     {
         // logging
         char log_buf[LOG_BUFFER_SIZE];
-        snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %s; tud not mounted\n\n",
-                 core_state_to_str(program_state.core_state));
-        usb_serial_print(log_buf);
-        usb_serial_flush();
+        if (usb_serial_connected())
+        {
+            snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %s; tud not mounted\n\n",
+                     core_state_to_str(program_state.core_state));
+            usb_serial_print(log_buf);
+            usb_serial_flush();
+        }
         // logging
 
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -747,10 +949,13 @@ void tx_usb_task(void *pvParameters)
             {
                 // logging
                 char log_buf[LOG_BUFFER_SIZE];
-                snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %s; tud cdc 1 not connected\n\n",
-                         core_state_to_str(program_state.core_state));
-                usb_serial_print(log_buf);
-                usb_serial_flush();
+                if (usb_serial_connected())
+                {
+                    snprintf(log_buf, sizeof(log_buf), "[tx_usb_task] State = %s; tud cdc 1 not connected\n\n",
+                             core_state_to_str(program_state.core_state));
+                    usb_serial_print(log_buf);
+                    usb_serial_flush();
+                }
                 // logging
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
@@ -760,11 +965,14 @@ void tx_usb_task(void *pvParameters)
 
             // logging
             char log_buf[LOG_BUFFER_SIZE];
-            snprintf(log_buf, sizeof(log_buf),
-                     "[SendTask] State = %s; Symbol sent: \"%c\"\n\n",
-                     core_state_to_str(program_state.core_state), queue_char);
-            usb_serial_print(log_buf);
-            usb_serial_flush();
+            if (usb_serial_connected())
+            {
+                snprintf(log_buf, sizeof(log_buf),
+                         "[tx_usb_task] State = %s; Symbol sent: \"%c\"\n\n",
+                         core_state_to_str(program_state.core_state), queue_char);
+                usb_serial_print(log_buf);
+                usb_serial_flush();
+            }
             // logging
 
             char_to_buzz(queue_char);
@@ -874,8 +1082,9 @@ int main()
     // program_state initial config
     program_state.core_state = IDLE;
     program_state.display_state = SHOW_USB_MORSE;
-    // for testing!!!
-    program_state.uart_state = UART_DISCONNECTED;
+
+    // for testing!!! (fate accepted, it's not for testing :( )
+    program_state.uart_state = UART_CONNECTED;
     program_state.usb_state = USB_CONNECTED;
 
     // creates binary semaphores
@@ -896,6 +1105,12 @@ int main()
     BaseType_t result_tx_usb = xTaskCreate(
         tx_usb_task, "TX_USB", STACKSIZE, NULL, 1, &TxUsbTaskHandle);
 
+    BaseType_t result_rx_uart = xTaskCreate(
+        rx_uart_task, "RX_UART", STACKSIZE, NULL, 1, &RxUartTaskHandle);
+
+    BaseType_t result_tx_uart = xTaskCreate(
+        tx_uart_task, "TX_UART", STACKSIZE, NULL, 1, &TxUartTaskHandle);
+
     BaseType_t result_handle_lcd = xTaskCreate(
         display_task, "DISPLAY", STACKSIZE, NULL, 1, &DisplayTaskHandle);
 
@@ -911,6 +1126,8 @@ int main()
     // Set buttons interrupt callback
     gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_FALL, true, btnFxn);
     gpio_set_irq_enabled(SW2_PIN, GPIO_IRQ_EDGE_FALL, true);
+
+    init_morse_uart();
 
     tusb_init();
 
