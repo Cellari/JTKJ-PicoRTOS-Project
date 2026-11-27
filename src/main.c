@@ -1058,7 +1058,6 @@ int main()
     init_hat_sdk();
     init_display();
     clear_display();
-    write_text("HI!");
 
     // Set the buttons
     init_sw1();
@@ -1067,8 +1066,6 @@ int main()
     // Initialize Buzzer
     init_buzzer();
 
-    usb_serial_init();
-
     // Setting up the imu-sensor.
     bool imu_initialized = false;
 
@@ -1076,15 +1073,17 @@ int main()
     {
         if (init_ICM42670() == 0 && ICM42670_start_with_default_values() == 0)
         {
-            usb_serial_print("ICM-42670P initialized successfully!\n");
+            // usb_serial_print("ICM-42670P initialized successfully!\n");
             imu_initialized = true;
         }
         else
         {
-            usb_serial_print("Failed to initialize ICM-42670P.\n");
+            // usb_serial_print("Failed to initialize ICM-42670P.\n");
             sleep_ms(100);
         }
     }
+
+    write_text("INIT: OK!");
 
     // program_state initial config
     program_state.core_state = IDLE;
@@ -1137,6 +1136,7 @@ int main()
     init_morse_uart();
 
     tusb_init();
+    usb_serial_init();
     vTaskStartScheduler();
 
     return 0;
