@@ -3,31 +3,30 @@
  * @author Pranjal Singh, Ari Suoyrjö, Gleb Bassalygo
  * @brief Pico morse code communicator device utilizing IMU, display, buzzer, usb, uart
  * @date 2026-11-26
- * 
- * 
+ *
+ *
  * @author Ari Suoyrjö
- * 
+ *
  * @details IMU algorithm and imu_task implementation, testing, user interaction (buzzer + button),
  * code review - prototype 1 & 2
- * 
- * 
+ *
+ *
  * @author Pranjal Singh
- * 
- * @details USB/UART core functionality (read/write + queues), morse translation function(s),                
- * basic display functionality - prototype 1 & 3 
- * 
- * 
+ *
+ * @details USB/UART core functionality (read/write + queues), morse translation function(s),
+ * basic display functionality - prototype 1 & 3
+ *
+ *
  * @author Gleb Bassalygo
- * 
+ *
  * @details Program architecture (active object pattern, state machine, inter-task communication - semaphore/queues),
  * final version of display handling, testing, logging, meeting coordination - prototype 2 & 3
- * 
- * 
+ *
+ *
  * @details Prototype 1 - Core features of Tier 1, ground work Tier 2
- * @details Prototype 2 - State machine v1 & inter-task comms & refactoring added to Prototype 1 -> Tier 2 ready 
+ * @details Prototype 2 - State machine v1 & inter-task comms & refactoring added to Prototype 1 -> Tier 2 ready
  * @details Prototype 3 - Active object pattern & revised inter-task comms & display reworked & UART functionality -> Tier 3
  */
-
 
 #include <time.h>
 #include <stdio.h>
@@ -260,11 +259,11 @@ void tx_uart_task(void *pvParameters)
 
 /**
  * @brief Helper function for logging
- * 
+ *
  * Returns string name of an event type
- * 
+ *
  * @param e - event type
- * @return const char* 
+ * @return const char*
  */
 const char *event_type_to_str(eventType e)
 {
@@ -291,11 +290,11 @@ const char *event_type_to_str(eventType e)
 
 /**
  * @brief Helper function for logging
- * 
+ *
  * Returns string name of a display state
- * 
+ *
  * @param s - display state
- * @return const char* 
+ * @return const char*
  */
 const char *display_state_to_str(displayState s)
 {
@@ -316,11 +315,11 @@ const char *display_state_to_str(displayState s)
 
 /**
  * @brief Helper function for logging
- * 
+ *
  * Returns string name of core state
- * 
- * @param s 
- * @return const char* 
+ *
+ * @param s
+ * @return const char*
  */
 const char *core_state_to_str(coreState s)
 {
@@ -744,7 +743,9 @@ void put_char_on_display(uint16_t display_ind, char c)
  */
 void update_display_txt(char *txt)
 {
+    // length of the text that needs to be displayed
     uint16_t txt_len = strlen(txt);
+    // length of the text currently on display
     uint16_t on_display_len = strlen(on_display);
     // checks if text on display is a prefix of txt
     // strncmp returns 0 if if the first (on_display_len) num of chars from both strings match
@@ -770,7 +771,7 @@ void update_display_txt(char *txt)
 
     // copies txt contents to on_display if it fits on the screen
     // edge case for messages longer than 147 chars not handled
-    if(txt_len < MAX_OLED_CHAR_NUM)
+    if (txt_len < MAX_OLED_CHAR_NUM)
         strcpy(on_display, txt);
 
     screen_updated = true;
@@ -827,6 +828,7 @@ void display_task(void *pvParameters)
         // checks if display state changed since last task wake up
         bool display_state_updated = (new_display_state != prev_display_state);
         // checks if new data is available for the current display state (translation doesn't have live update)
+        // e.g. the program is supposed to display morse from usb and there's new morse from usb -> the program has to update the screen
         bool new_relevant_data = (usb_morse_updated && (new_display_state == SHOW_USB_MORSE)) || (uart_morse_updated && (new_display_state == SHOW_UART_MORSE));
 
         // updates display if display state was switched or new relevant data arrived
@@ -1065,18 +1067,23 @@ int main()
     // Initialize Buzzer
     init_buzzer();
 
+    usb_serial_init();
+
     // Setting up the imu-sensor.
-    if (init_ICM42670() == 0)
+    bool imu_initialized = false;
+
+    while (imu_initialized == false)
     {
-        usb_serial_print("ICM-42670P initialized successfully!\n");
-        if (ICM42670_start_with_default_values() != 0)
+        if (init_ICM42670() == 0 && ICM42670_start_with_default_values() == 0)
         {
-            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+            usb_serial_print("ICM-42670P initialized successfully!\n");
+            imu_initialized = true;
         }
-    }
-    else
-    {
-        usb_serial_print("Failed to initialize ICM-42670P.\n");
+        else
+        {
+            usb_serial_print("Failed to initialize ICM-42670P.\n");
+            sleep_ms(100);
+        }
     }
 
     // program_state initial config
@@ -1130,8 +1137,6 @@ int main()
     init_morse_uart();
 
     tusb_init();
-
-    usb_serial_init();
     vTaskStartScheduler();
 
     return 0;
